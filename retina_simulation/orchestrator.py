@@ -621,7 +621,10 @@ async def _push_ground_truth_live(
                 }).encode()
                 req = urllib.request.Request(
                     url, data=body,
-                    headers={"Content-Type": "application/json"},
+                    headers={
+                        "Content-Type": "application/json",
+                        **({"X-API-Key": _k} if (_k := os.environ.get("RADAR_API_KEY", "")) else {}),
+                    },
                     method="POST",
                 )
                 await loop.run_in_executor(
@@ -698,7 +701,10 @@ async def _push_real_adsb(
                 }).encode()
                 req = urllib.request.Request(
                     url, data=body,
-                    headers={"Content-Type": "application/json"},
+                    headers={
+                        "Content-Type": "application/json",
+                        **({"X-API-Key": _k} if (_k := os.environ.get("RADAR_API_KEY", "")) else {}),
+                    },
                     method="POST",
                 )
                 await loop.run_in_executor(
@@ -819,7 +825,10 @@ async def _push_adsb_live(
             }).encode()
             req = urllib.request.Request(
                 url, data=body,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    **({"X-API-Key": _k} if (_k := os.environ.get("RADAR_API_KEY", "")) else {}),
+                },
                 method="POST",
             )
             await loop.run_in_executor(
