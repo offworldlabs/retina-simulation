@@ -618,7 +618,8 @@ def generate_fleet(
     # Each metro area gets multiple real towers so nodes in the same city
     # use DIFFERENT transmitters instead of all sharing the same one.
     metro_api_towers: dict[str, list[dict]] = {}
-    _cache_key = lambda lat, lon: f"{lat:.4f},{lon:.4f}"
+    def _cache_key(lat, lon):
+        return f"{lat:.4f},{lon:.4f}"
     if use_tower_api:
         try:
             try:

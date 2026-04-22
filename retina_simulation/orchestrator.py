@@ -26,14 +26,10 @@ import argparse
 import asyncio
 import json
 import logging
-import math
 import os
-import random
 import signal
 import ssl
-import sys
 import time
-from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -330,7 +326,7 @@ class FleetOrchestrator:
                 batch = pending[i:i + batch_size]
                 failed = await self._connect_batch(batch)
                 next_pending.extend(failed)
-                round_connected = len(self.connections) - round_start_connected
+                len(self.connections) - round_start_connected
                 log.info(
                     "  batch %d-%d: %d/%d connected this round (total: %d/%d)",
                     i + 1,
@@ -652,7 +648,6 @@ async def _push_real_adsb(
         try:
             from clients.adsb_lol import AdsbLolClient
         except ImportError:
-            from simulation import sys as _s
             import importlib.util
             _p = os.path.join(os.path.dirname(os.path.dirname(__file__)), "clients", "adsb_lol.py")
             spec = importlib.util.spec_from_file_location("adsb_lol", _p)

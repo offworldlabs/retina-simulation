@@ -497,9 +497,9 @@ def _perform_handshake(sock: socket.socket, config: NodeConfig,
         # Wait for KEY_ACK (non-blocking — best effort)
         key_ack = _recv_msg(sock, timeout=5)
         if key_ack and key_ack.get("type") == "KEY_ACK":
-            print(f"  ← KEY_ACK — key registered", file=sys.stderr)
+            print("  ← KEY_ACK — key registered", file=sys.stderr)
         else:
-            print(f"  ! KEY_ACK not received (chain of custody may not verify)", file=sys.stderr)
+            print("  ! KEY_ACK not received (chain of custody may not verify)", file=sys.stderr)
 
     return True
 
@@ -541,7 +541,7 @@ def _listener_loop(sock: socket.socket, config: NodeConfig, stop_event: threadin
                 except json.JSONDecodeError:
                     continue
                 if msg.get("type") == "CONFIG_REQUEST":
-                    print(f"\n  ← CONFIG_REQUEST — resending config", file=sys.stderr)
+                    print("\n  ← CONFIG_REQUEST — resending config", file=sys.stderr)
                     try:
                         _send_msg(sock, {
                             "type": "CONFIG",
