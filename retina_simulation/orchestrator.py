@@ -628,7 +628,7 @@ async def _push_ground_truth_live(
                     lambda r=req, ctx=ssl_context: urllib.request.urlopen(r, timeout=4, context=ctx),
                 )
         except Exception as e:
-            log.debug("Ground truth push failed: %s", e)
+            log.warning("Ground truth push failed: %s", e)
 
 
 async def _push_real_adsb(
