@@ -245,7 +245,7 @@ class SyntheticNodeGenerator:
         )
 
         # Add measurement noise
-        delay += random.gauss(0, 0.3)  # ~0.3 μs noise
+        delay += random.gauss(0, 0.1)  # ~0.1 μs noise (GPS-disciplined SDR)
         doppler += random.gauss(0, 2.0)  # ~2 Hz noise
 
         # SNR depends on distance (closer = stronger)

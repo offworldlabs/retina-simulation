@@ -584,9 +584,11 @@ class SimulationWorld:
             if random.random() < p_miss:
                 continue
 
-            # Add measurement noise — scales inversely with SNR
+            # Add measurement noise — scales inversely with SNR.
+            # 0.1 µs base = GPS-disciplined SDR with proper FM cross-correlation
+            # (achievable at SNR > 15 dB with 150 kHz FM bandwidth).
             noise_scale = max(0.5, 2.0 - (snr - 4) / 18)
-            delay += random.gauss(0, 0.3 * noise_scale)
+            delay += random.gauss(0, 0.1 * noise_scale)
             doppler += random.gauss(0, 2.0 * noise_scale)
 
             delays.append(round(delay, 2))
