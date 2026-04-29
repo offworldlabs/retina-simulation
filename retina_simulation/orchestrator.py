@@ -458,8 +458,22 @@ class FleetOrchestrator:
 
         # Stagger per-node send times evenly across frame_interval so we never
         # send to all nodes at once.
+        # Sort nodes by geographic position (rx_lat, rx_lon) so that nodes in
+        # the same metro area receive adjacent stagger slots.  Without sorting,
+        # connection order is random → two nearby nodes can be 20-40 s apart in
+        # stagger → frame-sync gate rejects them → zero metro associations.
+        # With geo-sort, same-metro nodes are 0.2–2 s apart → all pass the 3 s
+        # gate and timing-induced position error stays < 500 m.
         now_init = time.monotonic()
-        node_ids = list(self.connections.keys())
+        raw_node_ids = list(self.connections.keys())
+
+        def _geo_sort_key(nid: str) -> tuple:
+            if self.world and nid in self.world.nodes:
+                n = self.world.nodes[nid]
+                return (round(n.rx_lat, 0), round(n.rx_lon, 0), n.rx_lat, n.rx_lon)
+            return (0.0, 0.0, 0.0, 0.0)
+
+        node_ids = sorted(raw_node_ids, key=_geo_sort_key)
         n_nodes = max(len(node_ids), 1)
         next_send: dict[str, float] = {}
         for i, nid in enumerate(node_ids):
