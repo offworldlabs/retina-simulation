@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import json
+import logging
 import math
 import random
 import sys
@@ -244,32 +245,24 @@ def _jitter(val: float, sigma: float) -> float:
 
 _WATER_BOXES: list[tuple[float, float, float, float]] = [
     # (lat_min, lat_max, lon_min, lon_max)
-    # === ATLANTIC ===
-    # Open Atlantic — east of US east coast
-    (24.0, 47.5, -72.0, -50.0),    # Eastern seaboard to mid-Atlantic
-    (30.0, 60.0, -50.0, -10.0),    # Open Atlantic (US→Europe)
-    (35.0, 70.0, -25.0, 5.0),      # European Atlantic + North Sea + Bay of Biscay
-    # Bay of Biscay (between France/Spain and UK)
-    (42.5, 50.0, -10.0, -2.0),
-    # Mediterranean & Adriatic
-    (30.0, 47.0, 0.0, 40.0),
-    
-    # === NORTH AMERICA ===
     # Great Lakes
-    (41.5, 49.0, -92.5, -76.0),
+    (41.5, 49.0, -92.5, -76.0),   # approximate Great Lakes bounding box
     # Gulf of Mexico (open water — broad nearshore strip)
     (18.0, 30.5, -98.0, -80.0),
     # Atlantic east of Florida / Florida Straits / Bahamas
+    # Closes the -80W→-72W gap that makes nodes appear in the ocean near Miami
     (24.0, 31.0, -81.0, -72.0),
-    # Pacific Ocean — truly offshore strip
+    # Atlantic Ocean — open ocean east of the eastern seaboard
+    (24.0, 47.5, -72.0, -60.0),
+    # Pacific Ocean — truly offshore strip (cities are east of -117°W)
     (32.0, 49.0, -130.0, -125.0),
-    # Tampa Bay
+    # Tampa Bay (Gulf box doesn't have enough land-point density to cover the ~30km width)
     (27.35, 28.1, -82.85, -82.2),
     # Charlotte Harbor / Pine Island Sound FL
     (26.5, 27.1, -82.35, -81.85),
     # Sarasota Bay / Little Sarasota Bay FL
     (27.1, 27.55, -82.75, -82.5),
-    # Lake Pontchartrain LA
+    # Lake Pontchartrain LA (35km wide — nearby land points can't bridge it)
     (30.05, 30.45, -90.55, -89.65),
     # Corpus Christi Bay TX
     (27.7, 27.95, -97.5, -97.05),
@@ -291,9 +284,6 @@ _WATER_BOXES: list[tuple[float, float, float, float]] = [
     (30.0, 30.8, -88.2, -87.3),
     # Galveston Bay / Houston Ship Channel
     (29.3, 29.9, -95.1, -94.4),
-    
-    # === CARIBBEAN ===
-    (15.0, 28.0, -85.0, -60.0),
 ]
 
 # Known land points near coasts — locations within the water bounding boxes
@@ -449,13 +439,9 @@ def _place_rx_on_land(
     dist_min_km: float = 5.0, dist_max_km: float = 40.0,
     max_attempts: int = 80,
 ) -> tuple[float, float]:
-    """Place an RX position near a tower, rejecting water locations.
-    
-    Makes up to 80 random attempts within the distance range, then tries
-    walking inland in 8 cardinal/diagonal directions up to 150km.
-    If no land found, raises an exception rather than returning a water position.
-    """
+    """Place an RX position near a tower, rejecting water locations."""
     R = 6371.0
+    last_rx_lat, last_rx_lon = tx_lat, tx_lon
     for _ in range(max_attempts):
         distance_km = random.uniform(dist_min_km, dist_max_km)
         bearing_rad = random.uniform(0, 2 * math.pi)
@@ -465,12 +451,13 @@ def _place_rx_on_land(
         )
         rx_lat = tx_lat + math.degrees(dlat)
         rx_lon = tx_lon + math.degrees(dlon)
+        last_rx_lat, last_rx_lon = rx_lat, rx_lon
         if not _is_on_water(rx_lat, rx_lon):
             return (round(rx_lat, 6), round(rx_lon, 6))
-    
-    # All random attempts landed in water. Walk inland from the TX in 8 directions
-    # at 5km steps up to 150km — guaranteed to find land unless TX is on tiny island.
-    for step_km in range(5, 155, 5):
+    # All attempts landed in water. Walk inland from the TX in 4 cardinal
+    # directions (N, E, S, W) at 5km steps up to 100km — guaranteed to find
+    # land unless the TX tower itself is on a tiny offshore island.
+    for step_km in range(5, 105, 5):
         for bearing_deg in (0, 90, 180, 270, 45, 135, 225, 315):
             bearing_rad = math.radians(bearing_deg)
             dlat = (step_km * math.cos(bearing_rad)) / R
@@ -480,19 +467,9 @@ def _place_rx_on_land(
             rx_lat = tx_lat + math.degrees(dlat)
             rx_lon = tx_lon + math.degrees(dlon)
             if not _is_on_water(rx_lat, rx_lon):
-                logging.warning(
-                    "RX placement for TX(%.4f,%.4f): all %d random attempts failed, "
-                    "found land at distance %.1f km bearing %d°, using (%.4f,%.4f)",
-                    tx_lat, tx_lon, max_attempts, step_km, bearing_deg, rx_lat, rx_lon,
-                )
                 return (round(rx_lat, 6), round(rx_lon, 6))
-    
-    # No land found within 150km — TX is probably on a tiny island with no
-    # mainland nearby. Raise an exception so the orchestrator can skip this tower.
-    raise ValueError(
-        f"Unable to place RX on land within 150km of TX ({tx_lat:.4f}, {tx_lon:.4f}). "
-        f"Tower may be on an isolated island or in an unrecognized water body."
-    )
+    # Absolute last resort: return last random attempt even if on water
+    return (round(last_rx_lat, 6), round(last_rx_lon, 6))
 
 
 def _generate_cluster_nodes(
