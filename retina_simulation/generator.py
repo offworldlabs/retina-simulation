@@ -559,6 +559,7 @@ def generate_fleet(
     solo_fraction: float = 0.10,
     use_tower_api: bool = True,
     n_cluster: int = 8,
+    n_clusters: int = 1,
 ) -> list[dict]:
     """Generate a fleet of synthetic node configurations.
 
@@ -750,18 +751,36 @@ def generate_fleet(
     # All nodes share one TX, with RX tightly clustered ~20 km away.
     # Nearly-parallel baselines → beams all point the same direction →
     # any aircraft near the cluster appears in ALL cluster nodes' cones.
-    if n_cluster > 0:
-        # Dallas WFAA tower — central US, inland, clear of water boxes.
-        _CLUSTER_TX = (32.78060, -96.80060, 1600, 195_000_000, "WFAA-CLU")
-        cluster_nodes = _generate_cluster_nodes(
-            n=n_cluster,
-            tx_tower=_CLUSTER_TX,
-            prefix="synth-CLU",
-            cluster_dist_km=20.0,
-            cluster_spread_km=2.0,
-            bearing_deg=0.0,   # cluster center 20 km north of TX
-        )
-        nodes = cluster_nodes + nodes   # prepend so cluster IDs are first
+    if n_cluster > 0 and n_clusters > 0:
+        # Inland metro TXs, each clear of the water bounding boxes. Splitting
+        # the cluster budget across several metros spreads guaranteed-multinode
+        # coverage across the map instead of a single spot, so far more aircraft
+        # transit an overlap zone (the only place multi-node solves form).
+        _CLUSTER_TXS = [
+            (32.78060, -96.80060, 1600, 195_000_000, "WFAA-CLU"),    # Dallas
+            (41.87810, -87.62980, 1500, 197_000_000, "WMAQ-CLU"),    # Chicago
+            (33.74900, -84.38800, 1050, 199_000_000, "WSB-CLU"),     # Atlanta
+            (39.73920, -104.99030, 5300, 201_000_000, "KCNC-CLU"),   # Denver
+            (39.09970, -94.57860, 900, 203_000_000, "KMBC-CLU"),     # Kansas City
+        ]
+        k = min(n_clusters, len(_CLUSTER_TXS))
+        base, rem = divmod(n_cluster, k)
+        for ci in range(k):
+            size = base + (1 if ci < rem else 0)
+            if size <= 0:
+                continue
+            # Keep the legacy "synth-CLU" prefix for the single-cluster default
+            # (unchanged ids); number them only when there are several.
+            prefix = "synth-CLU" if k == 1 else f"synth-CLU{ci + 1}"
+            cluster_nodes = _generate_cluster_nodes(
+                n=size,
+                tx_tower=_CLUSTER_TXS[ci],
+                prefix=prefix,
+                cluster_dist_km=20.0,
+                cluster_spread_km=2.0,
+                bearing_deg=0.0,   # cluster center 20 km north of TX
+            )
+            nodes = cluster_nodes + nodes   # prepend so cluster IDs are first
 
     return nodes
 
@@ -793,10 +812,15 @@ def main():
     parser.add_argument("--regions", type=str, default="us", help="Comma-separated regions: us,eu,au")
     parser.add_argument("--output", type=str, default="fleet_config.json", help="Output file path")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--n-cluster", type=int, default=8,
+                        help="Total tightly-clustered multi-node-detection nodes")
+    parser.add_argument("--n-clusters", type=int, default=1,
+                        help="Number of distinct clusters to split --n-cluster across (more = multinode spread across the map)")
     args = parser.parse_args()
 
     regions = [r.strip().lower() for r in args.regions.split(",")]
-    nodes = generate_fleet(n_nodes=args.nodes, regions=regions, seed=args.seed)
+    nodes = generate_fleet(n_nodes=args.nodes, regions=regions, seed=args.seed,
+                           n_cluster=args.n_cluster, n_clusters=args.n_clusters)
     summary = fleet_summary(nodes)
 
     config = {
