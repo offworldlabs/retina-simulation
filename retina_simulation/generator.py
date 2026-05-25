@@ -95,7 +95,7 @@ _TOWERS_EU = [
 ]
 
 _TOWERS_AU = [
-    (33.86880, 151.20930, 1200, 226_500_000, "Sydney TCN-9"),
+    (-33.86880, 151.20930, 1200, 226_500_000, "Sydney TCN-9"),
     (-37.81360, 144.96310, 1100, 182_250_000, "Melbourne GTV-9"),
     (-27.46980, 153.02510, 1000, 191_625_000, "Brisbane QTQ-9"),
     (-34.92850, 138.60070, 950, 209_250_000, "Adelaide NWS-9"),
@@ -236,6 +236,30 @@ class GeneratedNodeConfig:
 def _jitter(val: float, sigma: float) -> float:
     """Add Gaussian jitter to a value."""
     return val + random.gauss(0, sigma)
+
+
+_DISPLAY_FUZZ_DEG = 0.0036
+
+
+def _node_display_fuzz(node_id: str) -> tuple[float, float]:
+    """Match the frontend's deterministic RX privacy offset."""
+    h1 = 0xDEADBEEF
+    h2 = 0x41C6CE57
+    for ch in node_id:
+        code = ord(ch)
+        h1 = ((h1 ^ code) * 2654435761) & 0xFFFFFFFF
+        h2 = ((h2 ^ code) * 1597334677) & 0xFFFFFFFF
+
+    h1 = ((h1 ^ (h1 >> 16)) * 2246822507) & 0xFFFFFFFF
+    h1 = ((h1 ^ (h1 >> 13)) * 3266489909) & 0xFFFFFFFF
+    h1 ^= h1 >> 16
+    h2 = ((h2 ^ (h2 >> 16)) * 2246822507) & 0xFFFFFFFF
+    h2 = ((h2 ^ (h2 >> 13)) * 3266489909) & 0xFFFFFFFF
+    h2 ^= h2 >> 16
+
+    n1 = (h1 / 0x100000000) * 2 - 1
+    n2 = (h2 / 0x100000000) * 2 - 1
+    return n1 * _DISPLAY_FUZZ_DEG, n2 * _DISPLAY_FUZZ_DEG
 
 
 # ── Water / ocean rejection ──────────────────────────────────────────────────
@@ -421,8 +445,78 @@ _COASTAL_LAND_POINTS: list[tuple[float, float]] = [
 ]
 
 
+_LAND_CHECK = None
+_LAND_CHECK_LOADED = False
+
+
+def _get_land_check():
+    """Lazily build a global coastline water-check from bundled Natural Earth data.
+
+    Uses shapely + Natural Earth polygons (10 m land, 50 m lakes): a point is
+    water if it lies outside every land polygon OR inside a lake polygon.  This
+    covers the whole world (oceans, seas, bays, and the Great Lakes), unlike the
+    US-only bounding boxes.  Loading costs ~120 MB RAM and ~0.5 s, so it is
+    deferred to the first call.  Returns None when shapely or the data files are
+    unavailable, in which case callers fall back to the bounding boxes.
+    """
+    global _LAND_CHECK, _LAND_CHECK_LOADED
+    if _LAND_CHECK_LOADED:
+        return _LAND_CHECK
+    _LAND_CHECK_LOADED = True
+
+    try:
+        from pathlib import Path
+        from shapely.geometry import shape, Point
+        from shapely import STRtree
+    except ImportError:
+        logging.getLogger(__name__).warning(
+            "shapely not installed; receiver water-rejection falls back to "
+            "US-only bounding boxes (no global coastline)."
+        )
+        return None
+
+    data_dir = Path(__file__).parent / "data"
+    try:
+        def _load(name):
+            with open(data_dir / name) as f:
+                return [shape(feat["geometry"]) for feat in json.load(f)["features"]]
+        land = _load("ne_10m_land.geojson")
+        lakes = _load("ne_50m_lakes.geojson")
+    except (OSError, ValueError) as exc:
+        logging.getLogger(__name__).warning(
+            "Natural Earth data unavailable (%s); water-rejection falls back "
+            "to bounding boxes.", exc,
+        )
+        return None
+
+    land_tree = STRtree(land)
+    lake_tree = STRtree(lakes)
+
+    def _is_water(lat: float, lon: float) -> bool:
+        p = Point(lon, lat)
+        if not any(land[i].covers(p) for i in land_tree.query(p)):
+            return True  # outside all land → ocean/sea
+        return any(lakes[i].covers(p) for i in lake_tree.query(p))  # inland lake
+
+    _LAND_CHECK = _is_water
+    return _LAND_CHECK
+
+
 def _is_on_water(lat: float, lon: float) -> bool:
-    """Heuristic check if a position is likely on water (ocean, lakes, bays)."""
+    """True if (lat, lon) is over water (ocean, sea, or large lake).
+
+    Primary check is shapely + Natural Earth polygons (global coastline, lakes
+    included).  Falls back to the US bounding boxes below when shapely or the
+    bundled data is unavailable.
+    """
+    check = _get_land_check()
+    if check is not None:
+        return check(lat, lon)
+    return _is_on_water_boxes(lat, lon)
+
+
+def _is_on_water_boxes(lat: float, lon: float) -> bool:
+    """Bounding-box fallback for US oceans, the Great Lakes, and large bays."""
     for lat_min, lat_max, lon_min, lon_max in _WATER_BOXES:
         if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
             # Check if near a known coastal land point.
@@ -434,14 +528,27 @@ def _is_on_water(lat: float, lon: float) -> bool:
     return False
 
 
+def _candidate_is_safe(
+    lat: float,
+    lon: float,
+    display_node_id: str | None = None,
+) -> bool:
+    if _is_on_water(lat, lon):
+        return False
+    if not display_node_id:
+        return True
+    dlat, dlon = _node_display_fuzz(display_node_id)
+    return not _is_on_water(lat + dlat, lon + dlon)
+
+
 def _place_rx_on_land(
     tx_lat: float, tx_lon: float,
     dist_min_km: float = 5.0, dist_max_km: float = 40.0,
     max_attempts: int = 80,
+    display_node_id: str | None = None,
 ) -> tuple[float, float]:
     """Place an RX position near a tower, rejecting water locations."""
     R = 6371.0
-    last_rx_lat, last_rx_lon = tx_lat, tx_lon
     for _ in range(max_attempts):
         distance_km = random.uniform(dist_min_km, dist_max_km)
         bearing_rad = random.uniform(0, 2 * math.pi)
@@ -451,14 +558,10 @@ def _place_rx_on_land(
         )
         rx_lat = tx_lat + math.degrees(dlat)
         rx_lon = tx_lon + math.degrees(dlon)
-        last_rx_lat, last_rx_lon = rx_lat, rx_lon
-        if not _is_on_water(rx_lat, rx_lon):
+        if _candidate_is_safe(rx_lat, rx_lon, display_node_id):
             return (round(rx_lat, 6), round(rx_lon, 6))
-    # All attempts landed in water. Walk inland from the TX in 4 cardinal
-    # directions (N, E, S, W) at 5km steps up to 100km — guaranteed to find
-    # land unless the TX tower itself is on a tiny offshore island.
-    for step_km in range(5, 105, 5):
-        for bearing_deg in (0, 90, 180, 270, 45, 135, 225, 315):
+    for step_km in range(5, 155, 5):
+        for bearing_deg in range(0, 360, 15):
             bearing_rad = math.radians(bearing_deg)
             dlat = (step_km * math.cos(bearing_rad)) / R
             dlon = (step_km * math.sin(bearing_rad)) / (
@@ -466,10 +569,18 @@ def _place_rx_on_land(
             )
             rx_lat = tx_lat + math.degrees(dlat)
             rx_lon = tx_lon + math.degrees(dlon)
-            if not _is_on_water(rx_lat, rx_lon):
+            if _candidate_is_safe(rx_lat, rx_lon, display_node_id):
                 return (round(rx_lat, 6), round(rx_lon, 6))
-    # Absolute last resort: return last random attempt even if on water
-    return (round(last_rx_lat, 6), round(last_rx_lon, 6))
+    if _candidate_is_safe(tx_lat, tx_lon, display_node_id):
+        return (round(tx_lat, 6), round(tx_lon, 6))
+    coastal_points = sorted(
+        _COASTAL_LAND_POINTS,
+        key=lambda point: _haversine_km(tx_lat, tx_lon, point[0], point[1]),
+    )
+    for land_lat, land_lon in coastal_points:
+        if _candidate_is_safe(land_lat, land_lon, display_node_id):
+            return (round(land_lat, 6), round(land_lon, 6))
+    return (round(tx_lat, 6), round(tx_lon, 6))
 
 
 def _generate_cluster_nodes(
@@ -511,6 +622,7 @@ def _generate_cluster_nodes(
 
     nodes = []
     for i in range(n):
+        node_id = f"{prefix}-{i + 1:04d}"
         # Jitter each RX within cluster_spread_km of cluster center
         angle = random.uniform(0, 2 * math.pi)
         spread = random.uniform(0, cluster_spread_km)
@@ -521,11 +633,12 @@ def _generate_cluster_nodes(
         rx_lat = cluster_lat + math.degrees(dlat2)
         rx_lon = cluster_lon + math.degrees(dlon2)
 
-        if _is_on_water(rx_lat, rx_lon):
+        if not _candidate_is_safe(rx_lat, rx_lon, node_id):
             rx_lat, rx_lon = _place_rx_on_land(
                 tx_lat, tx_lon,
                 dist_min_km=cluster_dist_km - 5,
                 dist_max_km=cluster_dist_km + 5,
+                display_node_id=node_id,
             )
 
         rx_alt_ft = random.uniform(100, 1500)
@@ -533,7 +646,7 @@ def _generate_cluster_nodes(
         max_range = random.uniform(45, 60)
 
         node = GeneratedNodeConfig(
-            node_id=f"{prefix}-{i + 1:04d}",
+            node_id=node_id,
             rx_lat=round(rx_lat, 6),
             rx_lon=round(rx_lon, 6),
             rx_alt_ft=round(rx_alt_ft, 1),
@@ -670,16 +783,20 @@ def generate_fleet(
             fc_hz = t["fc_hz"]
             callsign = t["tx_callsign"]
 
-        # Place RX on land (rejects water positions)
-        rx_lat, rx_lon = _place_rx_on_land(tx_lat, tx_lon, dist_min_km=5, dist_max_km=40)
+        region_prefix = region.upper()
+        node_id = f"synth-{region_prefix}-{i + 1:04d}"
+        rx_lat, rx_lon = _place_rx_on_land(
+            tx_lat,
+            tx_lon,
+            dist_min_km=5,
+            dist_max_km=40,
+            display_node_id=node_id,
+        )
         rx_alt_ft = random.uniform(100, 2000)
 
         node_fc = fc_hz + random.choice([-500000, 0, 0, 0, 500000])
         beam_width = random.uniform(35, 45)
         max_range = random.uniform(35, 55)
-
-        region_prefix = region.upper()
-        node_id = f"synth-{region_prefix}-{i + 1:04d}"
 
         node = GeneratedNodeConfig(
             node_id=node_id,
@@ -721,14 +838,18 @@ def generate_fleet(
             tower = solo_pool[j]          # strict: never re-use a tower index
             tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
 
-            # Place RX on land (rejects water positions)
-            rx_lat, rx_lon = _place_rx_on_land(tx_lat, tx_lon, dist_min_km=8, dist_max_km=35)
+            node_id = f"synth-SOLO-{j + 1:04d}"
+            rx_lat, rx_lon = _place_rx_on_land(
+                tx_lat,
+                tx_lon,
+                dist_min_km=8,
+                dist_max_km=35,
+                display_node_id=node_id,
+            )
             rx_alt_ft = random.uniform(100, 1500)
 
             beam_width = random.uniform(35, 45)
             max_range = random.uniform(35, 55)
-
-            node_id = f"synth-SOLO-{j + 1:04d}"
 
             node = GeneratedNodeConfig(
                 node_id=node_id,
