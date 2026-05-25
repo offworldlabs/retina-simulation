@@ -1,5 +1,6 @@
 """Tests for simulation subsystem — world, synthetic nodes, frame generation."""
 
+from retina_simulation.generator import generate_fleet, _is_on_water, _node_display_fuzz
 from retina_simulation.world import SimulationWorld, NodeConfig as SimNodeConfig
 from retina_simulation.node import NodeConfig as SynNodeConfig, _config_hash, SyntheticNodeGenerator
 
@@ -94,3 +95,11 @@ class TestSyntheticNodeGenerator:
         assert "snr" in frame
         assert "adsb" in frame
         assert len(frame["delay"]) > 0
+
+    def test_generate_fleet_keeps_real_and_display_rx_off_water(self):
+        nodes = generate_fleet(n_nodes=50, seed=42, use_tower_api=False)
+        assert len(nodes) == 50
+        for node in nodes:
+            assert not _is_on_water(node["rx_lat"], node["rx_lon"])
+            dlat, dlon = _node_display_fuzz(node["node_id"])
+            assert not _is_on_water(node["rx_lat"] + dlat, node["rx_lon"] + dlon)
