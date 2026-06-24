@@ -143,6 +143,21 @@ _TOWERS_SOLO_US = [
 ]
 
 
+# ── Coverage-ring metros ──────────────────────────────────────────────────────
+# Each entry: shared low-band (VHF) illuminator + the airspace core (airport) the
+# receiver ring is built around and aims at. VHF keeps target Doppler inside the
+# analytics 90 Hz association gate for ~18 km baselines; the TX sits 12-30 km off
+# the core for a non-degenerate bistatic angle. Cores reuse world._US_WAYPOINTS.
+# (tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon)
+_RING_TXS = [
+    (32.78060, -96.80060, 1600, 195_000_000, "WFAA-RING", 32.8968, -97.0380),   # DFW
+    (41.87810, -87.62980, 1500, 197_000_000, "WMAQ-RING", 41.9742, -87.9073),   # ORD Chicago
+    (33.74900, -84.38800, 1050, 199_000_000, "WSB-RING",  33.6407, -84.4277),   # ATL
+    (39.73920, -104.99030, 5300, 201_000_000, "KCNC-RING", 39.8561, -104.6737), # DEN
+    (39.09970, -94.57860, 900, 203_000_000, "KMBC-RING",  39.2976, -94.7139),   # MCI Kansas City
+]
+
+
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Return great-circle distance in km between two lat/lon points."""
     R = 6371.0
@@ -152,6 +167,19 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
          + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
          * math.sin(dlon / 2) ** 2)
     return R * 2 * math.asin(math.sqrt(max(0.0, min(1.0, a))))
+
+
+def _bearing_between(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Initial bearing point1→point2, degrees from north clockwise.
+
+    Matches world._bearing_deg so a beam aimed here lands in world's cone check.
+    """
+    dlon = math.radians(lon2 - lon1)
+    lat1r, lat2r = math.radians(lat1), math.radians(lat2)
+    x = math.sin(dlon) * math.cos(lat2r)
+    y = (math.cos(lat1r) * math.sin(lat2r)
+         - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon))
+    return math.degrees(math.atan2(x, y)) % 360
 
 
 # Rural US bounding boxes used when the named solo pool needs extending.
@@ -231,6 +259,20 @@ class GeneratedNodeConfig:
     max_range_km: float = 50.0
     region: str = "us"
     tx_callsign: str = ""
+    beam_azimuth_deg: Optional[float] = None   # explicit Yagi aim; None → broadside
+
+
+def _node_dict(node: GeneratedNodeConfig) -> dict:
+    """Serialize a node, omitting an unset beam_azimuth_deg.
+
+    The backend solver does `float(node_cfg["beam_azimuth_deg"])` whenever the
+    key is present, so a null on the wire would crash it. Dropping the key for
+    broadside nodes makes the backend fall back to its own broadside auto-aim.
+    """
+    d = asdict(node)
+    if d.get("beam_azimuth_deg") is None:
+        d.pop("beam_azimuth_deg", None)
+    return d
 
 
 def _jitter(val: float, sigma: float) -> float:
@@ -583,86 +625,119 @@ def _place_rx_on_land(
     return (round(tx_lat, 6), round(tx_lon, 6))
 
 
-def _generate_cluster_nodes(
+def _generate_coverage_ring(
     n: int,
+    core_lat: float,
+    core_lon: float,
     tx_tower: tuple,
-    prefix: str = "synth-CLU",
-    cluster_dist_km: float = 20.0,
-    cluster_spread_km: float = 2.0,
-    bearing_deg: float = 0.0,
+    prefix: str = "synth-RING",
+    radius_km: float = 18.0,
+    beam_width_deg: float = 50.0,
+    max_range_km: float = 60.0,
+    aim: str = "core",
+    start_bearing_deg: float = 0.0,
 ) -> list[dict]:
-    """Generate n nodes with tightly clustered RX positions all sharing one TX.
+    """Generate n receivers on a ring around a metro core, all sharing one TX.
 
-    All RX are placed within cluster_spread_km of a cluster center that is
-    cluster_dist_km from the TX at the given bearing.  With nearly-parallel
-    baselines, world.py's add_node() sets all beam azimuths to the same
-    direction (perpendicular to the TX→cluster-center line), so any aircraft
-    spawning near a cluster node will appear in ALL cluster nodes' detection
-    cones simultaneously — guaranteed multi-node detections.
-
-    Args:
-        n: Number of cluster nodes to generate.
-        tx_tower: (lat, lon, alt_ft, fc_hz, callsign) tuple of the shared TX.
-        prefix: Node ID prefix.
-        cluster_dist_km: Distance from TX to the RX cluster center.
-        cluster_spread_km: Max radius within which RX positions are jittered.
-        bearing_deg: Compass bearing (from north) of cluster center from TX.
+    Each RX sits radius_km from the core at an evenly spaced bearing and (for
+    aim="core") points its Yagi at the core. The union of inward beams covers
+    the core airspace from diverse look angles, so the bistatic range gradients
+    span well — low GDOP and observable velocity even at n=2, unlike a
+    co-located cluster whose gradients are near-parallel. One shared low-band
+    illuminator keeps per-node Doppler inside the analytics association gate.
     """
     tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tx_tower
     R = 6371.0
 
-    # Cluster center: cluster_dist_km from TX at bearing_deg
-    bearing_rad = math.radians(bearing_deg)
-    dlat = (cluster_dist_km * math.cos(bearing_rad)) / R
-    dlon = (cluster_dist_km * math.sin(bearing_rad)) / (
-        R * math.cos(math.radians(tx_lat))
-    )
-    cluster_lat = tx_lat + math.degrees(dlat)
-    cluster_lon = tx_lon + math.degrees(dlon)
-
     nodes = []
     for i in range(n):
-        node_id = f"{prefix}-{i + 1:04d}"
-        # Jitter each RX within cluster_spread_km of cluster center
-        angle = random.uniform(0, 2 * math.pi)
-        spread = random.uniform(0, cluster_spread_km)
-        dlat2 = (spread * math.cos(angle)) / R
-        dlon2 = (spread * math.sin(angle)) / (
-            R * math.cos(math.radians(cluster_lat))
+        bearing_rad = math.radians((start_bearing_deg + 360.0 * i / n) % 360.0)
+        dlat = (radius_km * math.cos(bearing_rad)) / R
+        dlon = (radius_km * math.sin(bearing_rad)) / (
+            R * math.cos(math.radians(core_lat))
         )
-        rx_lat = cluster_lat + math.degrees(dlat2)
-        rx_lon = cluster_lon + math.degrees(dlon2)
+        rx_lat = core_lat + math.degrees(dlat)
+        rx_lon = core_lon + math.degrees(dlon)
 
+        node_id = f"{prefix}-{i + 1:04d}"
         if not _candidate_is_safe(rx_lat, rx_lon, node_id):
             rx_lat, rx_lon = _place_rx_on_land(
-                tx_lat, tx_lon,
-                dist_min_km=cluster_dist_km - 5,
-                dist_max_km=cluster_dist_km + 5,
+                core_lat, core_lon,
+                dist_min_km=max(5.0, radius_km - 5),
+                dist_max_km=radius_km + 5,
                 display_node_id=node_id,
             )
 
-        rx_alt_ft = random.uniform(100, 1500)
-        beam_width = random.uniform(35, 45)
-        max_range = random.uniform(45, 60)
+        if aim == "broadside":
+            beam_azimuth = (_bearing_between(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
+        else:
+            beam_azimuth = _bearing_between(rx_lat, rx_lon, core_lat, core_lon)
 
         node = GeneratedNodeConfig(
             node_id=node_id,
             rx_lat=round(rx_lat, 6),
             rx_lon=round(rx_lon, 6),
-            rx_alt_ft=round(rx_alt_ft, 1),
+            rx_alt_ft=round(random.uniform(100, 1500), 1),
             tx_lat=tx_lat,
             tx_lon=tx_lon,
             tx_alt_ft=tx_alt_ft,
             fc_hz=fc_hz,
             fs_hz=2_000_000,
-            beam_width_deg=round(beam_width, 1),
-            max_range_km=round(max_range, 1),
+            beam_width_deg=round(beam_width_deg, 1),
+            max_range_km=round(max_range_km, 1),
             region="us",
             tx_callsign=callsign,
+            beam_azimuth_deg=round(beam_azimuth, 2),
         )
-        nodes.append(asdict(node))
+        nodes.append(_node_dict(node))
 
     return nodes
+
+
+def _active_rings(n_cluster: int, n_clusters: int, ring_spec: list = _RING_TXS):
+    """Yield (ring_id, spec, size) for each ring the budget actually produces.
+
+    Single source of truth for which metros get rings and how many receivers
+    each — used by both the node generator and coverage_cells so the cells can
+    never disagree with the nodes (no reverse-engineering from node positions).
+    """
+    if n_cluster <= 0 or n_clusters <= 0:
+        return
+    k = min(n_clusters, len(ring_spec))
+    base, rem = divmod(n_cluster, k)
+    for ci in range(k):
+        size = base + (1 if ci < rem else 0)
+        if size <= 0:
+            continue
+        ring_id = "synth-RING" if k == 1 else f"synth-RING{ci + 1}"
+        yield ring_id, ring_spec[ci], size
+
+
+def coverage_cells(
+    n_cluster: int = 8,
+    n_clusters: int = 1,
+    ring_spec: list = _RING_TXS,
+    traffic_radius_km: float = 70.0,
+) -> list[dict]:
+    """First-class metro-cell descriptors for the active rings.
+
+    The cell core is the airspace centre from the ring spec (the true airport),
+    never reconstructed from receiver positions — so water-displaced receivers
+    cannot drift the hub-radial aim point. ops_weight defaults to ring size; a
+    caller with real traffic figures can override the spec to inject ops/yr.
+    """
+    cells = []
+    for ring_id, spec, size in _active_rings(n_cluster, n_clusters, ring_spec):
+        tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon = spec
+        cells.append({
+            "ring_id": ring_id,
+            "core_lat": core_lat,
+            "core_lon": core_lon,
+            "radius_km": traffic_radius_km,
+            "ops_weight": float(size),
+            "illuminator": callsign,
+        })
+    return cells
 
 
 def generate_fleet(
@@ -673,6 +748,11 @@ def generate_fleet(
     use_tower_api: bool = True,
     n_cluster: int = 8,
     n_clusters: int = 1,
+    ring_radius_km: float = 18.0,
+    ring_beam_width_deg: float = 50.0,
+    ring_max_range_km: float = 60.0,
+    ring_aim: str = "core",
+    ring_spec: list = _RING_TXS,
 ) -> list[dict]:
     """Generate a fleet of synthetic node configurations.
 
@@ -689,10 +769,10 @@ def generate_fleet(
     rural towers far from any other nodes, useful for testing single-node
     ellipse-arc function without overlapping detection zones.
 
-    n_cluster nodes (default 8) form a dedicated multi-node cluster: all RX
-    within 2 km of a common center, all sharing the same TX tower.  This
-    guarantees multi-node detections and exercises the bistatic solver.
-    Cluster slots are carved out of the metro allocation so total stays n_nodes.
+    n_cluster receivers (default 8) form coverage rings — split across n_clusters
+    metros, each a ring around the metro core aimed inward and sharing one low-band
+    illuminator. Diverse look angles give low-GDOP, velocity-observable multinode
+    fixes. Ring slots are carved out of the metro allocation so total stays n_nodes.
 
     Args:
         n_nodes: Total nodes to generate (100-1000).
@@ -700,7 +780,14 @@ def generate_fleet(
         seed: Random seed for reproducibility.
         solo_fraction: Fraction of nodes allocated as solo/isolated (0.0-1.0).
         use_tower_api: Query towers.retina.fm for diverse per-node towers.
-        n_cluster: Number of tightly-clustered multi-node-detection nodes.
+        n_cluster: Total coverage-ring receivers (split across n_clusters metros).
+        n_clusters: Number of metro coverage rings.
+        ring_radius_km: Receiver ring radius around each metro core.
+        ring_beam_width_deg: Yagi half-power beamwidth for ring receivers.
+        ring_max_range_km: Detection range for ring receivers.
+        ring_aim: "core" (aim at metro core) or "broadside" (perp to TX).
+        ring_spec: Metro ring table (defaults to _RING_TXS); inject to add metros
+            or change illuminators without editing library source.
 
     Returns:
         List of node config dicts ready for fleet_config.json.
@@ -813,7 +900,7 @@ def generate_fleet(
             region=region,
             tx_callsign=callsign,
         )
-        nodes.append(asdict(node))
+        nodes.append(_node_dict(node))
 
     # --- Solo nodes (isolated — strictly one node per unique tower position) ---
     if n_solo > 0:
@@ -866,42 +953,29 @@ def generate_fleet(
                 region="us",
                 tx_callsign=callsign,
             )
-            nodes.append(asdict(node))
+            nodes.append(_node_dict(node))
 
-    # --- Cluster nodes (dedicated multi-node detection group) ----------------
-    # All nodes share one TX, with RX tightly clustered ~20 km away.
-    # Nearly-parallel baselines → beams all point the same direction →
-    # any aircraft near the cluster appears in ALL cluster nodes' cones.
-    if n_cluster > 0 and n_clusters > 0:
-        # Inland metro TXs, each clear of the water bounding boxes. Splitting
-        # the cluster budget across several metros spreads guaranteed-multinode
-        # coverage across the map instead of a single spot, so far more aircraft
-        # transit an overlap zone (the only place multi-node solves form).
-        _CLUSTER_TXS = [
-            (32.78060, -96.80060, 1600, 195_000_000, "WFAA-CLU"),    # Dallas
-            (41.87810, -87.62980, 1500, 197_000_000, "WMAQ-CLU"),    # Chicago
-            (33.74900, -84.38800, 1050, 199_000_000, "WSB-CLU"),     # Atlanta
-            (39.73920, -104.99030, 5300, 201_000_000, "KCNC-CLU"),   # Denver
-            (39.09970, -94.57860, 900, 203_000_000, "KMBC-CLU"),     # Kansas City
-        ]
-        k = min(n_clusters, len(_CLUSTER_TXS))
-        base, rem = divmod(n_cluster, k)
-        for ci in range(k):
-            size = base + (1 if ci < rem else 0)
-            if size <= 0:
-                continue
-            # Keep the legacy "synth-CLU" prefix for the single-cluster default
-            # (unchanged ids); number them only when there are several.
-            prefix = "synth-CLU" if k == 1 else f"synth-CLU{ci + 1}"
-            cluster_nodes = _generate_cluster_nodes(
-                n=size,
-                tx_tower=_CLUSTER_TXS[ci],
-                prefix=prefix,
-                cluster_dist_km=20.0,
-                cluster_spread_km=2.0,
-                bearing_deg=0.0,   # cluster center 20 km north of TX
-            )
-            nodes = cluster_nodes + nodes   # prepend so cluster IDs are first
+    # --- Coverage-ring nodes (dedicated multi-node detection group) ----------
+    # Each metro gets a ring of RX around its airspace core, every RX aimed at
+    # the core and sharing one low-band illuminator. Diverse look angles give
+    # low GDOP / observable velocity (unlike a co-located cluster), and the
+    # shared VHF TX keeps Doppler inside the association gate. Spreading the
+    # budget across metros puts overlap coverage where traffic actually flies.
+    ring_nodes = []
+    for ring_id, spec, size in _active_rings(n_cluster, n_clusters, ring_spec):
+        tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon = spec
+        ring_nodes.extend(_generate_coverage_ring(
+            n=size,
+            core_lat=core_lat,
+            core_lon=core_lon,
+            tx_tower=(tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign),
+            prefix=ring_id,
+            radius_km=ring_radius_km,
+            beam_width_deg=ring_beam_width_deg,
+            max_range_km=ring_max_range_km,
+            aim=ring_aim,
+        ))
+    nodes = ring_nodes + nodes   # prepend so ring IDs are first
 
     return nodes
 
@@ -933,15 +1007,28 @@ def main():
     parser.add_argument("--regions", type=str, default="us", help="Comma-separated regions: us,eu,au")
     parser.add_argument("--output", type=str, default="fleet_config.json", help="Output file path")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--n-cluster", type=int, default=8,
-                        help="Total tightly-clustered multi-node-detection nodes")
-    parser.add_argument("--n-clusters", type=int, default=1,
-                        help="Number of distinct clusters to split --n-cluster across (more = multinode spread across the map)")
+    parser.add_argument("--n-cluster", "--n-ring", dest="n_cluster", type=int, default=30,
+                        help="Total coverage-ring receivers (split across rings)")
+    parser.add_argument("--n-clusters", "--n-rings", dest="n_clusters", type=int, default=5,
+                        help="Number of metro coverage rings (more = multinode spread across the map)")
+    parser.add_argument("--ring-radius-km", type=float, default=18.0,
+                        help="Receiver ring radius around each metro core")
+    parser.add_argument("--ring-beam-width-deg", type=float, default=50.0,
+                        help="Yagi half-power beamwidth for ring receivers")
+    parser.add_argument("--ring-max-range-km", type=float, default=60.0,
+                        help="Detection range for ring receivers")
+    parser.add_argument("--ring-aim", type=str, default="core", choices=["core", "broadside"],
+                        help="Aim ring beams at the metro core or broadside to TX")
     args = parser.parse_args()
 
     regions = [r.strip().lower() for r in args.regions.split(",")]
     nodes = generate_fleet(n_nodes=args.nodes, regions=regions, seed=args.seed,
-                           n_cluster=args.n_cluster, n_clusters=args.n_clusters)
+                           n_cluster=args.n_cluster, n_clusters=args.n_clusters,
+                           ring_radius_km=args.ring_radius_km,
+                           ring_beam_width_deg=args.ring_beam_width_deg,
+                           ring_max_range_km=args.ring_max_range_km,
+                           ring_aim=args.ring_aim)
+    cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters)
     summary = fleet_summary(nodes)
 
     config = {
@@ -950,6 +1037,7 @@ def main():
             "summary": summary,
         },
         "nodes": nodes,
+        "cells": cells,
     }
 
     with open(args.output, "w") as f:
