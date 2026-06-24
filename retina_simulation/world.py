@@ -126,7 +126,7 @@ class NodeConfig:
     doppler_max: float = 300.0
     min_doppler: float = 15.0
     # Detection geometry
-    beam_azimuth_deg: float = 0.0   # Yagi boresight azimuth from north
+    beam_azimuth_deg: Optional[float] = None   # None → auto broadside in add_node
     beam_width_deg: float = 41.0     # Yagi half-power beamwidth (40-42° spec)
     max_range_km: float = 50.0       # maximum detection range
 
@@ -135,6 +135,23 @@ def config_hash(config: NodeConfig) -> str:
     """Compute a short hash of the node configuration."""
     cfg_str = json.dumps(asdict(config), sort_keys=True)
     return hashlib.sha256(cfg_str.encode()).hexdigest()[:16]
+
+
+@dataclass
+class MetroCell:
+    """A metro coverage cell that hub-radial traffic is routed through.
+
+    Aircraft assigned to a cell are arrivals (fly the edge→core radial),
+    departures (core→edge) or overflights (a chord through the core) — the same
+    radial pattern as real STAR/SID procedures, which is where the receiver
+    ring's coverage spokes lie.
+    """
+    core_lat: float
+    core_lon: float
+    radius_km: float = 70.0
+    ops_weight: float = 1.0
+    arrival_bearings_deg: list = field(default_factory=list)    # empty → uniform
+    departure_bearings_deg: list = field(default_factory=list)
 
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────
@@ -252,16 +269,116 @@ class SimulationWorld:
         self.frac_drone: float = 0.10
         self.frac_dark: float = 0.15
         # remaining fraction = commercial aircraft with ADS-B
+        # Hub-radial flight planning: when metro_cells is non-empty, this
+        # fraction of spawns is routed through a metro cell; the rest are
+        # en-route traffic on the inter-metro waypoint net. Empty cells →
+        # pure fallback (the original random-node-anchored spawn).
+        self.metro_cells: list[MetroCell] = []
+        self.frac_metro_traffic: float = 0.6
+        self.arrival_departure_overflight_weights = (0.45, 0.35, 0.20)
 
     def add_node(self, config: NodeConfig):
-        """Register a synthetic node in the simulation."""
+        """Register a synthetic node in the simulation.
+
+        An explicit beam_azimuth_deg (aimed Yagi) is kept as-is. When unset
+        (None) the beam is auto-aimed broadside to the RX→TX baseline, which
+        maximises cross-coverage of aircraft transiting the bistatic zone.
+        """
+        if config.beam_azimuth_deg is None:
+            config.beam_azimuth_deg = (_bearing_deg(
+                config.rx_lat, config.rx_lon,
+                config.tx_lat, config.tx_lon,
+            ) + 90.0) % 360.0
         self.nodes[config.node_id] = config
-        # Auto-set beam azimuth perpendicular to the RX→TX baseline.
-        # Yagi antennas point broadside to maximise aircraft cross-coverage.
-        config.beam_azimuth_deg = (_bearing_deg(
-            config.rx_lat, config.rx_lon,
-            config.tx_lat, config.tx_lon,
-        ) + 90.0) % 360.0
+
+    def _choose_spawn_pose(self) -> tuple[float, float, list]:
+        """Pick spawn (lat, lon) and route. With metro cells: frac_metro_traffic
+        is hub-radial through a metro (denser, feeds the rings), the rest is
+        nationwide en-route background so the whole map stays alive (every plane a
+        blue dot, not every blue dot a plane). Without cells: the legacy
+        node-anchored spawn (keeps training export and solo arcs intact)."""
+        if not self.metro_cells:
+            return self._fallback_pose()
+        if random.random() < self.frac_metro_traffic:
+            cell = self._pick_metro_cell()
+            kind = random.choices(
+                ("arrival", "departure", "overflight"),
+                weights=self.arrival_departure_overflight_weights,
+            )[0]
+            return self._radial_pose(cell, kind)
+        return self._nationwide_pose()
+
+    def _nationwide_pose(self) -> tuple[float, float, list]:
+        """Cross-country en-route traffic on the national waypoint net, spawned
+        anywhere along the leg (not just at airports) and independent of node
+        placement — the nationwide background that keeps the map alive."""
+        start = random.choice(_US_WAYPOINTS)
+        far = [wp for wp in _US_WAYPOINTS
+               if _haversine_km(start[0], start[1], wp[0], wp[1]) > 400]
+        dest = random.choice(far or _US_WAYPOINTS)
+        t = random.uniform(0.0, 1.0)
+        lat = start[0] + t * (dest[0] - start[0]) + random.gauss(0, 0.3)
+        lon = start[1] + t * (dest[1] - start[1]) + random.gauss(0, 0.3)
+        return lat, lon, [(lat, lon), dest]
+
+    def _pick_metro_cell(self) -> MetroCell:
+        return random.choices(
+            self.metro_cells, weights=[c.ops_weight for c in self.metro_cells]
+        )[0]
+
+    def _radial_pose(self, cell: MetroCell, kind: str) -> tuple[float, float, list]:
+        """Edge↔core radial (arrival/departure) or a chord near the core
+        (overflight) — the radial geometry of real STAR/SID procedures, which is
+        where the receiver ring's coverage spokes lie."""
+        def at(bearing_deg: float, dist_km: float) -> tuple[float, float]:
+            br = math.radians(bearing_deg)
+            lat = cell.core_lat + math.degrees((dist_km * math.cos(br)) / R_EARTH)
+            lon = cell.core_lon + math.degrees(
+                (dist_km * math.sin(br)) / (R_EARTH * math.cos(math.radians(cell.core_lat)))
+            )
+            return lat, lon
+
+        core = (cell.core_lat + random.gauss(0, 0.02),
+                cell.core_lon + random.gauss(0, 0.02))
+
+        if kind == "arrival":
+            bearing = (random.choice(cell.arrival_bearings_deg)
+                       if cell.arrival_bearings_deg else random.uniform(0, 360))
+            lat, lon = at(bearing, cell.radius_km)
+            return lat, lon, [(lat, lon), core]
+
+        if kind == "departure":
+            bearing = (random.choice(cell.departure_bearings_deg)
+                       if cell.departure_bearings_deg else random.uniform(0, 360))
+            return core[0], core[1], [core, at(bearing, cell.radius_km)]
+
+        # overflight: enter one edge, exit near the opposite edge, passing near the core
+        entry = random.uniform(0, 360)
+        exit_b = (entry + 180 + random.uniform(-35, 35)) % 360
+        lat, lon = at(entry, cell.radius_km)
+        return lat, lon, [(lat, lon), at(exit_b, cell.radius_km)]
+
+    def _fallback_pose(self) -> tuple[float, float, list]:
+        """Original spawn: broadside to a random node's baseline, heading to a
+        nearby waypoint. Used for en-route traffic and whenever no metro cells
+        are configured (keeps training export and solo single-node arcs intact)."""
+        if self.nodes:
+            anchor = random.choice(list(self.nodes.values()))
+            baseline_bearing = _bearing_deg(
+                anchor.rx_lat, anchor.rx_lon, anchor.tx_lat, anchor.tx_lon
+            )
+            perp_rad = math.radians((baseline_bearing + 90.0) % 360.0)
+            dist_km = random.uniform(5.0, anchor.max_range_km * 0.7)
+            anchor_lat = anchor.rx_lat + (dist_km * math.cos(perp_rad)) / 111.32
+            cos_lat = math.cos(math.radians(anchor.rx_lat))
+            anchor_lon = anchor.rx_lon + (dist_km * math.sin(perp_rad)) / (111.32 * max(cos_lat, 1e-6))
+        else:
+            anchor_lat, anchor_lon = self.center_lat, self.center_lon
+
+        lat = anchor_lat + random.gauss(0, 0.03)
+        lon = anchor_lon + random.gauss(0, 0.03)
+        route = [(lat, lon)] + _pick_route(anchor_lat, anchor_lon, max_dist_km=50)
+        return lat, lon, route
 
     def _spawn_aircraft(self, mode: str = "detection") -> SimulatedAircraft:
         """Spawn a new aircraft along a realistic flight corridor.
@@ -293,33 +410,7 @@ class SimulationWorld:
         else:
             object_type = "aircraft"  # commercial — will get ADS-B in adsb modes
 
-        # Anchor near a random node (if any exist) so aircraft spawn within
-        # detection range of actual nodes.  Fall back to the world centre when
-        # no nodes are registered yet.
-        if self.nodes:
-            anchor = random.choice(list(self.nodes.values()))
-            # Spawn broadside to the baseline so the aircraft is guaranteed to
-            # be inside the anchor node's Yagi beam (which points perpendicular
-            # to the RX→TX baseline).
-            baseline_bearing = _bearing_deg(
-                anchor.rx_lat, anchor.rx_lon, anchor.tx_lat, anchor.tx_lon
-            )
-            perp_rad = math.radians((baseline_bearing + 90.0) % 360.0)
-            dist_km = random.uniform(5.0, anchor.max_range_km * 0.7)
-            anchor_lat = anchor.rx_lat + (dist_km * math.cos(perp_rad)) / 111.32
-            cos_lat = math.cos(math.radians(anchor.rx_lat))
-            anchor_lon = anchor.rx_lon + (dist_km * math.sin(perp_rad)) / (111.32 * max(cos_lat, 1e-6))
-        else:
-            anchor_lat, anchor_lon = self.center_lat, self.center_lon
-
-        # Start aircraft very close to the anchor point (within ~3 km)
-        lat = anchor_lat + random.gauss(0, 0.03)
-        lon = anchor_lon + random.gauss(0, 0.03)
-
-        # Route: fly toward a waypoint within 50 km, staying in-region.
-        # Prepend the actual spawn position so the aircraft starts here and
-        # heads toward the nearest regional waypoint.
-        route = [(lat, lon)] + _pick_route(anchor_lat, anchor_lon, max_dist_km=50)
+        lat, lon, route = self._choose_spawn_pose()
 
         if mode == "anomalous" and random.random() < 0.2:
             is_anomalous = True
