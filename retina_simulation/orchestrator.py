@@ -979,8 +979,11 @@ async def main_async(args):
     else:
         log.info("No config file, generating %d nodes...", args.nodes)
         regions = [r.strip() for r in args.regions.split(",")]
-        all_nodes = generate_fleet(n_nodes=args.nodes, regions=regions, seed=args.seed)
-        cells = coverage_cells()
+        all_nodes = generate_fleet(
+            n_nodes=args.nodes, regions=regions, seed=args.seed,
+            n_cluster=args.n_cluster, n_clusters=args.n_clusters,
+        )
+        cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters)
 
     # When --metros is specified, filter nodes to only those near selected metros
     if getattr(args, "metros", "") and args.metros:
@@ -1127,6 +1130,13 @@ def main():
                         help="Regions for auto-generation: us,eu,au")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for fleet generation")
+    parser.add_argument("--n-cluster", type=int, default=8,
+                        help="Total metro-ring receiver budget, split across --n-clusters "
+                             "metros (only used when auto-generating, i.e. no --config)")
+    parser.add_argument("--n-clusters", type=int, default=1,
+                        help="Number of distinct metro rings to fan the --n-cluster budget "
+                             "across (1 = single Dallas ring; 5 = Dallas, Chicago, Atlanta, "
+                             "Denver, Kansas City)")
     parser.add_argument("--host", type=str, default="localhost",
                         help="Server hostname")
     parser.add_argument("--port", type=int, default=3012,

@@ -5,14 +5,13 @@ broadside to TX), and emits an explicit beam_azimuth_deg. The union of inward
 beams must contain the core airspace.
 """
 
-import math
 import random
 
 import pytest
 
 from retina_simulation import generator
 from retina_simulation.generator import (
-    _generate_coverage_ring, _bearing_between, _haversine_km, _RING_TXS,
+    _generate_coverage_ring, _bearing_between, _RING_TXS,
 )
 from retina_simulation.world import SimulationWorld, NodeConfig, SimulatedAircraft
 
