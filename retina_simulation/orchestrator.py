@@ -35,8 +35,8 @@ from typing import Optional
 
 # Add parent dir so we can import simulation packages
 
-from retina_simulation.world import SimulationWorld, NodeConfig
-from retina_simulation.generator import generate_fleet, fleet_summary
+from retina_simulation.world import SimulationWorld, NodeConfig, MetroCell
+from retina_simulation.generator import generate_fleet, fleet_summary, coverage_cells
 from retina_simulation.tower_resolver import resolve_towers, apply_tower_assignments
 
 logging.basicConfig(
@@ -45,6 +45,27 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("fleet")
+
+
+def _cells_to_metrocells(cell_dicts: list[dict]) -> list[MetroCell]:
+    """Build MetroCell objects from first-class cell descriptors (fleet config
+    'cells' or generator.coverage_cells). Cores come straight from the ring spec,
+    so water-displaced receivers can't drift the hub-radial aim point. Cells
+    lacking a core_lat/core_lon are skipped (a cell can't be placed without a
+    core) rather than aborting the whole run on a malformed config."""
+    cells = []
+    for c in cell_dicts:
+        if c.get("core_lat") is None or c.get("core_lon") is None:
+            log.warning("Skipping coverage cell without core_lat/core_lon: %r",
+                        c.get("ring_id", c))
+            continue
+        cells.append(MetroCell(
+            core_lat=c["core_lat"],
+            core_lon=c["core_lon"],
+            radius_km=c.get("radius_km", 70.0),
+            ops_weight=c.get("ops_weight", 1.0),
+        ))
+    return cells
 
 RETINA_VERSION = "1.0"
 HEARTBEAT_INTERVAL_S = 60
@@ -201,8 +222,12 @@ class FleetOrchestrator:
         max_aircraft: int = 0,
         beam_width_deg: float = 0.0,
         max_range_km: float = 0.0,
+        hub_radial: bool = True,
+        metro_traffic_frac: float = 0.6,
+        cells: Optional[list[dict]] = None,
     ):
         self.node_configs = node_configs
+        self.cells = cells or []
         self.host = host
         self.port = port
         self.mode = mode
@@ -214,6 +239,8 @@ class FleetOrchestrator:
         self.max_aircraft = max(0, max_aircraft)
         self.beam_width_deg = max(0.0, beam_width_deg)
         self.max_range_km = max(0.0, max_range_km)
+        self.hub_radial = hub_radial
+        self.metro_traffic_frac = min(1.0, max(0.0, metro_traffic_frac))
         self.connections: dict[str, NodeConnection] = {}
         self.world: Optional[SimulationWorld] = None
         self._running = False
@@ -240,10 +267,12 @@ class FleetOrchestrator:
         center_lon = sum(lons) / len(lons)
 
         self.world = SimulationWorld(center_lat=center_lat, center_lon=center_lon)
-        # Scale aircraft count with node count
+        # Aircraft population is a nationwide field (alive map), independent of
+        # sensor count — floor it high so the whole US stays populated, not just
+        # the metros. --min-aircraft/--max-aircraft override.
         n = len(self.node_configs)
-        auto_min_aircraft = max(10, n // 5)
-        auto_max_aircraft = max(18, n // 3)
+        auto_min_aircraft = max(150, n // 2)
+        auto_max_aircraft = max(300, n)
         self.world.min_aircraft = self.min_aircraft or auto_min_aircraft
         self.world.max_aircraft = self.max_aircraft or auto_max_aircraft
         if self.world.max_aircraft < self.world.min_aircraft:
@@ -270,13 +299,19 @@ class FleetOrchestrator:
                 fs_hz=cfg.get("fs_hz", 2_000_000),
                 beam_width_deg=self.beam_width_deg or cfg.get("beam_width_deg", 40),
                 max_range_km=self.max_range_km or cfg.get("max_range_km", 50),
+                beam_azimuth_deg=cfg.get("beam_azimuth_deg"),  # None → broadside in add_node
             )
             self.world.add_node(node)
 
+        if self.hub_radial and self.cells:
+            self.world.metro_cells = _cells_to_metrocells(self.cells)
+            self.world.frac_metro_traffic = self.metro_traffic_frac
+
         log.info(
-            "SimulationWorld: center=(%.2f, %.2f), %d nodes, %d-%d aircraft",
+            "SimulationWorld: center=(%.2f, %.2f), %d nodes, %d-%d aircraft, %d metro cells",
             center_lat, center_lon, len(self.node_configs),
             self.world.min_aircraft, self.world.max_aircraft,
+            len(self.world.metro_cells),
         )
 
     async def _connect_batch(self, configs: list[dict]) -> list[dict]:
@@ -919,6 +954,8 @@ _KNOWN_METROS = {
     "chi": {"name": "Chicago", "lat": 41.872, "lon": -87.624, "radius_nm": 80},
     "den": {"name": "Denver", "lat": 39.739, "lon": -104.990, "radius_nm": 80},
     "lax": {"name": "Los Angeles", "lat": 34.052, "lon": -118.244, "radius_nm": 80},
+    "dfw": {"name": "Dallas-Fort Worth", "lat": 32.897, "lon": -97.038, "radius_nm": 80},
+    "kc": {"name": "Kansas City", "lat": 39.298, "lon": -94.714, "radius_nm": 70},
 }
 
 
@@ -944,10 +981,15 @@ async def main_async(args):
         if not all_nodes:
             # Fallback: maybe it's the old nodes_config.json format
             all_nodes = data.get("nodes", [])
+        cells = data.get("cells", [])
     else:
         log.info("No config file, generating %d nodes...", args.nodes)
         regions = [r.strip() for r in args.regions.split(",")]
-        all_nodes = generate_fleet(n_nodes=args.nodes, regions=regions, seed=args.seed)
+        all_nodes = generate_fleet(
+            n_nodes=args.nodes, regions=regions, seed=args.seed,
+            n_cluster=args.n_cluster, n_clusters=args.n_clusters,
+        )
+        cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters)
 
     # When --metros is specified, filter nodes to only those near selected metros
     if getattr(args, "metros", "") and args.metros:
@@ -965,18 +1007,29 @@ async def main_async(args):
             log.info("Metro filter (%s): %d → %d nodes",
                      args.metros, before, len(all_nodes))
 
-    # Resolve real TX towers for each node (skip for non-US regions — FCC-only)
+    # Resolve real TX towers for each node (skip for non-US regions — FCC-only).
+    # Coverage-ring receivers keep their shared illuminator: resolving per-RX
+    # would give each ring node a different nearest tower, breaking the shared-TX
+    # association invariant and the metro-cell grouping.
     if getattr(args, "use_real_towers", False):
         log.info("Resolving real TX towers via FCC API (cached)…")
-        assignments = resolve_towers(all_nodes)
-        updated = apply_tower_assignments(all_nodes, assignments)
-        log.info("Real tower assignments applied to %d / %d nodes.", updated, len(all_nodes))
+        resolvable = [n for n in all_nodes
+                      if not str(n.get("node_id", "")).startswith("synth-RING")]
+        assignments = resolve_towers(resolvable)
+        updated = apply_tower_assignments(resolvable, assignments)
+        log.info("Real tower assignments applied to %d / %d nodes.", updated, len(resolvable))
 
     # Limit to requested number
     if args.nodes and args.nodes < len(all_nodes):
         all_nodes = all_nodes[:args.nodes]
 
-    log.info("Fleet: %d nodes", len(all_nodes))
+    # Keep only cells whose ring survived node filtering (e.g. --metros / --nodes)
+    if cells:
+        node_ids = [n["node_id"] for n in all_nodes]
+        cells = [c for c in cells
+                 if any(nid.startswith(c["ring_id"]) for nid in node_ids)]
+
+    log.info("Fleet: %d nodes, %d metro cells", len(all_nodes), len(cells))
     summary = fleet_summary(all_nodes)
     log.info("Summary: %s", json.dumps(summary, indent=2))
 
@@ -993,6 +1046,9 @@ async def main_async(args):
         max_aircraft=args.max_aircraft,
         beam_width_deg=args.beam_width_deg,
         max_range_km=args.max_range_km,
+        hub_radial=not args.no_hub_radial,
+        metro_traffic_frac=args.metro_traffic_frac,
+        cells=cells,
     )
 
     # Build shared simulation world
@@ -1080,6 +1136,14 @@ def main():
                         help="Regions for auto-generation: us,eu,au")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for fleet generation")
+    parser.add_argument("--n-cluster", "--n-ring", dest="n_cluster", type=int, default=30,
+                        help="Total metro-ring receiver budget, split across --n-clusters "
+                             "rings (only used when auto-generating, i.e. no --config). "
+                             "Matches the generator default.")
+    parser.add_argument("--n-clusters", "--n-rings", dest="n_clusters", type=int, default=5,
+                        help="Number of distinct metro rings to fan the --n-cluster budget "
+                             "across (5 = Dallas, Chicago, Atlanta, Denver, Kansas City; "
+                             "1 = single Dallas ring). Matches the generator default.")
     parser.add_argument("--host", type=str, default="localhost",
                         help="Server hostname")
     parser.add_argument("--port", type=int, default=3012,
@@ -1117,6 +1181,10 @@ def main():
                         help="Comma-separated metro codes to focus on (e.g. atl,gvl). "
                              "Filters fleet to these metros and injects real ADS-B from adsb.lol. "
                              f"Available: {','.join(_KNOWN_METROS.keys())}")
+    parser.add_argument("--no-hub-radial", action="store_true",
+                        help="Disable hub-radial flight planning (use legacy random-anchor spawn)")
+    parser.add_argument("--metro-traffic-frac", type=float, default=0.6,
+                        help="Fraction of spawns routed through metro coverage rings (rest en-route)")
     args = parser.parse_args()
 
     asyncio.run(main_async(args))
