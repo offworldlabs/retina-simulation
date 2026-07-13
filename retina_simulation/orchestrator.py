@@ -50,16 +50,22 @@ log = logging.getLogger("fleet")
 def _cells_to_metrocells(cell_dicts: list[dict]) -> list[MetroCell]:
     """Build MetroCell objects from first-class cell descriptors (fleet config
     'cells' or generator.coverage_cells). Cores come straight from the ring spec,
-    so water-displaced receivers can't drift the hub-radial aim point."""
-    return [
-        MetroCell(
+    so water-displaced receivers can't drift the hub-radial aim point. Cells
+    lacking a core_lat/core_lon are skipped (a cell can't be placed without a
+    core) rather than aborting the whole run on a malformed config."""
+    cells = []
+    for c in cell_dicts:
+        if c.get("core_lat") is None or c.get("core_lon") is None:
+            log.warning("Skipping coverage cell without core_lat/core_lon: %r",
+                        c.get("ring_id", c))
+            continue
+        cells.append(MetroCell(
             core_lat=c["core_lat"],
             core_lon=c["core_lon"],
             radius_km=c.get("radius_km", 70.0),
             ops_weight=c.get("ops_weight", 1.0),
-        )
-        for c in cell_dicts
-    ]
+        ))
+    return cells
 
 RETINA_VERSION = "1.0"
 HEARTBEAT_INTERVAL_S = 60
@@ -1130,13 +1136,14 @@ def main():
                         help="Regions for auto-generation: us,eu,au")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for fleet generation")
-    parser.add_argument("--n-cluster", type=int, default=8,
+    parser.add_argument("--n-cluster", "--n-ring", dest="n_cluster", type=int, default=30,
                         help="Total metro-ring receiver budget, split across --n-clusters "
-                             "metros (only used when auto-generating, i.e. no --config)")
-    parser.add_argument("--n-clusters", type=int, default=1,
+                             "rings (only used when auto-generating, i.e. no --config). "
+                             "Matches the generator default.")
+    parser.add_argument("--n-clusters", "--n-rings", dest="n_clusters", type=int, default=5,
                         help="Number of distinct metro rings to fan the --n-cluster budget "
-                             "across (1 = single Dallas ring; 5 = Dallas, Chicago, Atlanta, "
-                             "Denver, Kansas City)")
+                             "across (5 = Dallas, Chicago, Atlanta, Denver, Kansas City; "
+                             "1 = single Dallas ring). Matches the generator default.")
     parser.add_argument("--host", type=str, default="localhost",
                         help="Server hostname")
     parser.add_argument("--port", type=int, default=3012,

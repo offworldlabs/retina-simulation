@@ -322,9 +322,12 @@ class SimulationWorld:
         return lat, lon, [(lat, lon), dest]
 
     def _pick_metro_cell(self) -> MetroCell:
-        return random.choices(
-            self.metro_cells, weights=[c.ops_weight for c in self.metro_cells]
-        )[0]
+        weights = [c.ops_weight for c in self.metro_cells]
+        if sum(weights) <= 0:
+            # All-zero ops_weight (e.g. a hand-authored config): random.choices
+            # rejects a zero total, so fall back to a uniform pick.
+            return random.choice(self.metro_cells)
+        return random.choices(self.metro_cells, weights=weights)[0]
 
     def _radial_pose(self, cell: MetroCell, kind: str) -> tuple[float, float, list]:
         """Edge↔core radial (arrival/departure) or a chord near the core
