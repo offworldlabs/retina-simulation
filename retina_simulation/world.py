@@ -73,6 +73,40 @@ _US_WAYPOINTS = [
     (45.5898, -122.5951),  # PDX Portland
 ]
 
+# ── Regional waypoint nets ────────────────────────────────────────────────────
+# A metro-scoped fleet has no receivers outside its own metro, so cross-country
+# en-route traffic is pure waste: it burns simulation budget on aircraft no node
+# can ever see, and puts ground-truth tracks on the map thousands of km from the
+# only coverage that exists. Selecting a regional net keeps the background
+# traffic inside the region the fleet actually covers.
+#
+# Keyed by the same metro codes as generator._KNOWN_METROS.
+_REGIONAL_WAYPOINTS: dict[str, list[tuple[float, float]]] = {
+    "gvl": [
+        (34.8957, -82.2189),  # GSP Greenville-Spartanburg
+        (34.8479, -82.3499),  # GMU Greenville Downtown
+        (34.9157, -81.9565),  # SPA Spartanburg Downtown Memorial
+        (34.4946, -82.7093),  # AND Anderson Regional
+        (35.4362, -82.5418),  # AVL Asheville
+        (35.2144, -80.9473),  # CLT Charlotte
+        (34.8964, -81.0572),  # RKH Rock Hill
+        (33.9388, -81.1195),  # CAE Columbia
+        (34.4984, -81.9573),  # GRD Greenwood
+        (35.7565, -81.6790),  # HKY Hickory
+    ],
+}
+
+
+def waypoints_for_metro(metro: Optional[str]) -> list[tuple[float, float]]:
+    """Waypoint net for a metro code, falling back to the nationwide net.
+
+    An unknown or absent code returns _US_WAYPOINTS, so callers that don't know
+    about regional scoping keep the original coast-to-coast behaviour.
+    """
+    if not metro:
+        return _US_WAYPOINTS
+    return _REGIONAL_WAYPOINTS.get(metro.strip().lower(), _US_WAYPOINTS)
+
 
 @dataclass
 class SimulatedAircraft:
@@ -225,12 +259,37 @@ def _bistatic_doppler(target_enu, vel_enu, tx_enu, rx_enu, freq_hz):
 
 # ── Flight corridor route generation ─────────────────────────────────────────
 
+_NATIONWIDE_MIN_LEG_KM = 400.0
 
-def _pick_route(center_lat: float, center_lon: float, max_dist_km: float = 300) -> list[tuple[float, float]]:
+
+def _min_leg_km(waypoints: list[tuple[float, float]]) -> float:
+    """A "this is a real en-route leg" threshold scaled to a waypoint net.
+
+    Scaled from the net's own extent, capped at the nationwide 400 km so the
+    continent-wide net keeps its original behaviour exactly. A regional net has
+    no pair 400 km apart, so without the scaling every destination would be
+    rejected and the fallback would hand back coast-to-coast routes — the exact
+    thing regional scoping exists to prevent.
+    """
+    if len(waypoints) < 2:
+        return 0.0
+    lats = [wp[0] for wp in waypoints]
+    lons = [wp[1] for wp in waypoints]
+    span_km = _haversine_km(min(lats), min(lons), max(lats), max(lons))
+    return min(_NATIONWIDE_MIN_LEG_KM, 0.35 * span_km)
+
+
+def _pick_route(
+    center_lat: float,
+    center_lon: float,
+    max_dist_km: float = 300,
+    waypoints: Optional[list[tuple[float, float]]] = None,
+) -> list[tuple[float, float]]:
     """Pick a sequence of 2-4 waypoints near center forming a realistic route."""
-    nearby = [wp for wp in _US_WAYPOINTS if _haversine_km(center_lat, center_lon, wp[0], wp[1]) < max_dist_km]
+    waypoints = waypoints if waypoints is not None else _US_WAYPOINTS
+    nearby = [wp for wp in waypoints if _haversine_km(center_lat, center_lon, wp[0], wp[1]) < max_dist_km]
     if len(nearby) < 2:
-        nearby = sorted(_US_WAYPOINTS, key=lambda wp: _haversine_km(center_lat, center_lon, wp[0], wp[1]))[:6]
+        nearby = sorted(waypoints, key=lambda wp: _haversine_km(center_lat, center_lon, wp[0], wp[1]))[:6]
 
     n_waypoints = random.randint(2, min(4, len(nearby)))
     start = random.choice(nearby)
@@ -256,9 +315,18 @@ def _pick_route(center_lat: float, center_lon: float, max_dist_km: float = 300) 
 class SimulationWorld:
     """Shared simulation world with aircraft and multiple observer nodes."""
 
-    def __init__(self, center_lat: float = 34.0, center_lon: float = -84.0):
+    def __init__(
+        self,
+        center_lat: float = 34.85,
+        center_lon: float = -82.39,
+        waypoints: Optional[list[tuple[float, float]]] = None,
+    ):
         self.center_lat = center_lat
         self.center_lon = center_lon
+        # En-route waypoint net for background traffic. Defaults to the
+        # nationwide list; set a regional net (waypoints_for_metro) to keep
+        # background aircraft inside a metro-scoped fleet's coverage.
+        self.waypoints = waypoints if waypoints is not None else _US_WAYPOINTS
         self.aircraft: list[SimulatedAircraft] = []
         self.nodes: dict[str, NodeConfig] = {}
         self._next_id = 1
@@ -316,12 +384,14 @@ class SimulationWorld:
         return self._nationwide_pose()
 
     def _nationwide_pose(self) -> tuple[float, float, list]:
-        """Cross-country en-route traffic on the national waypoint net, spawned
-        anywhere along the leg (not just at airports) and independent of node
-        placement — the nationwide background that keeps the map alive."""
-        start = random.choice(_US_WAYPOINTS)
-        far = [wp for wp in _US_WAYPOINTS if _haversine_km(start[0], start[1], wp[0], wp[1]) > 400]
-        dest = random.choice(far or _US_WAYPOINTS)
+        """En-route traffic on self.waypoints, spawned anywhere along the leg (not
+        just at airports) and independent of node placement — the background that
+        keeps the map alive. Nationwide by default; regional under metro scoping."""
+        net = self.waypoints
+        start = random.choice(net)
+        min_leg = _min_leg_km(net)
+        far = [wp for wp in net if _haversine_km(start[0], start[1], wp[0], wp[1]) > min_leg]
+        dest = random.choice(far or net)
         t = random.uniform(0.0, 1.0)
         lat = start[0] + t * (dest[0] - start[0]) + random.gauss(0, 0.3)
         lon = start[1] + t * (dest[1] - start[1]) + random.gauss(0, 0.3)
@@ -384,7 +454,7 @@ class SimulationWorld:
 
         lat = anchor_lat + random.gauss(0, 0.03)
         lon = anchor_lon + random.gauss(0, 0.03)
-        route = [(lat, lon)] + _pick_route(anchor_lat, anchor_lon, max_dist_km=50)
+        route = [(lat, lon)] + _pick_route(anchor_lat, anchor_lon, max_dist_km=50, waypoints=self.waypoints)
         return lat, lon, route
 
     def _spawn_aircraft(self, mode: str = "detection") -> SimulatedAircraft:

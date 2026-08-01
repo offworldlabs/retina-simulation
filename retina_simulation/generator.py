@@ -34,6 +34,8 @@ _TOWERS_US = [
     (30.33270, -81.65560, 1200, 575_000_000, "WJXT"),  # Jacksonville
     (36.85260, -75.97820, 1300, 539_000_000, "WAVY"),  # Norfolk
     (35.78700, -78.78170, 1500, 563_000_000, "WRAL"),  # Raleigh
+    (35.11194, -82.60639, 1962, 569_000_000, "WYFF"),  # Greenville SC (Caesars Head)
+    (35.17019, -82.29050, 2212, 201_000_000, "WSPA-TV"),  # Greenville SC (Hogback Mtn)
     # Midwest
     (41.87150, -87.62440, 1650, 191_000_000, "WBBM-TV"),  # Chicago
     (42.33140, -83.04580, 1200, 551_000_000, "WXYZ-TV"),  # Detroit
@@ -154,7 +156,31 @@ _RING_TXS = [
     (33.74900, -84.38800, 1050, 199_000_000, "WSB-RING", 33.6407, -84.4277),  # ATL
     (39.73920, -104.99030, 5300, 201_000_000, "KCNC-RING", 39.8561, -104.6737),  # DEN
     (39.09970, -94.57860, 900, 203_000_000, "KMBC-RING", 39.2976, -94.7139),  # MCI Kansas City
+    # WSPA-TV is a real VHF-high (RF ch 11, 201 MHz) illuminator 31 km NNW of GSP —
+    # the only VHF station in the Greenville market, so it shares 201 MHz with the
+    # DEN ring above. Harmless: rings never overlap geographically, and association
+    # gating is per-node Doppler, not per-frequency.
+    (35.17019, -82.29050, 2212, 201_000_000, "WSPA-RING", 34.8957, -82.2189),  # GSP Greenville SC
 ]
+
+
+# ── Metro areas ───────────────────────────────────────────────────────────────
+# Shared by the generator's --metro scoping and the orchestrator's --metros
+# post-generation filter, so the two can never disagree about where a metro is.
+_KNOWN_METROS = {
+    "atl": {"name": "Atlanta", "lat": 33.749, "lon": -84.388, "radius_nm": 80},
+    "gvl": {"name": "Greenville", "lat": 34.852, "lon": -82.394, "radius_nm": 60},
+    "clt": {"name": "Charlotte", "lat": 35.227, "lon": -80.843, "radius_nm": 70},
+    "nyc": {"name": "New York", "lat": 40.748, "lon": -73.986, "radius_nm": 80},
+    "dca": {"name": "Washington DC", "lat": 38.935, "lon": -77.079, "radius_nm": 70},
+    "chi": {"name": "Chicago", "lat": 41.872, "lon": -87.624, "radius_nm": 80},
+    "den": {"name": "Denver", "lat": 39.739, "lon": -104.990, "radius_nm": 80},
+    "lax": {"name": "Los Angeles", "lat": 34.052, "lon": -118.244, "radius_nm": 80},
+    "dfw": {"name": "Dallas-Fort Worth", "lat": 32.897, "lon": -97.038, "radius_nm": 80},
+    "kc": {"name": "Kansas City", "lat": 39.298, "lon": -94.714, "radius_nm": 70},
+}
+
+_NM_TO_KM = 1.852
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -691,6 +717,31 @@ def _generate_coverage_ring(
     return nodes
 
 
+def _resolve_metro(metro: str) -> dict:
+    """Resolve a metro code (e.g. "gvl") to its descriptor in _KNOWN_METROS."""
+    key = metro.strip().lower()
+    if key not in _KNOWN_METROS:
+        raise ValueError(f"Unknown metro {metro!r} (available: {', '.join(sorted(_KNOWN_METROS))})")
+    return _KNOWN_METROS[key]
+
+
+def _towers_in_metro(towers: list, metro: dict) -> list:
+    """Towers within the metro's own radius of its centre."""
+    radius_km = metro["radius_nm"] * _NM_TO_KM
+    return [t for t in towers if _haversine_km(t[0], t[1], metro["lat"], metro["lon"]) <= radius_km]
+
+
+def _rings_in_metro(ring_spec: list, metro: dict) -> list:
+    """Ring specs whose airspace core lies inside the metro.
+
+    Cores are matched (not the illuminators) because the core is what the ring
+    and its coverage cell are built around — a TX can legitimately sit outside
+    the metro radius while lighting an airspace inside it.
+    """
+    radius_km = metro["radius_nm"] * _NM_TO_KM
+    return [s for s in ring_spec if _haversine_km(s[5], s[6], metro["lat"], metro["lon"]) <= radius_km]
+
+
 def _active_rings(n_cluster: int, n_clusters: int, ring_spec: list = _RING_TXS):
     """Yield (ring_id, spec, size) for each ring the budget actually produces.
 
@@ -715,6 +766,7 @@ def coverage_cells(
     n_clusters: int = 1,
     ring_spec: list = _RING_TXS,
     traffic_radius_km: float = 70.0,
+    metro: Optional[str] = None,
 ) -> list[dict]:
     """First-class metro-cell descriptors for the active rings.
 
@@ -722,7 +774,14 @@ def coverage_cells(
     never reconstructed from receiver positions — so water-displaced receivers
     cannot drift the hub-radial aim point. ops_weight defaults to ring size; a
     caller with real traffic figures can override the spec to inject ops/yr.
+
+    When *metro* is set the spec is narrowed to that metro's rings with the same
+    filter generate_fleet uses, so the cells always describe the nodes that were
+    actually generated.
     """
+    if metro:
+        ring_spec = _rings_in_metro(ring_spec, _resolve_metro(metro))
+        n_clusters = min(n_clusters, len(ring_spec))
     cells = []
     for ring_id, spec, size in _active_rings(n_cluster, n_clusters, ring_spec):
         tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon = spec
@@ -752,6 +811,7 @@ def generate_fleet(
     ring_max_range_km: float = 60.0,
     ring_aim: str = "core",
     ring_spec: list = _RING_TXS,
+    metro: Optional[str] = None,
 ) -> list[dict]:
     """Generate a fleet of synthetic node configurations.
 
@@ -787,6 +847,10 @@ def generate_fleet(
         ring_aim: "core" (aim at metro core) or "broadside" (perp to TX).
         ring_spec: Metro ring table (defaults to _RING_TXS); inject to add metros
             or change illuminators without editing library source.
+        metro: Restrict the whole fleet to one metro area (a _KNOWN_METROS code
+            such as "gvl"). Towers and rings outside that metro's radius are
+            dropped and solo/rural placement is disabled, so every node lands in
+            the one metro. None (default) keeps the continent-wide behaviour.
 
     Returns:
         List of node config dicts ready for fleet_config.json.
@@ -796,24 +860,38 @@ def generate_fleet(
 
     random.seed(seed)
 
+    metro_area = _resolve_metro(metro) if metro else None
+
     tower_db = {
         "us": _TOWERS_US,
         "eu": _TOWERS_EU,
         "au": _TOWERS_AU,
     }
 
-    # Solo towers — only available for US region (where rural towers are defined)
-    solo_towers = _TOWERS_SOLO_US if "us" in regions else []
+    # Solo towers — only available for US region (where rural towers are defined).
+    # A metro-scoped fleet has no solo nodes at all: solo placement exists to put
+    # receivers far from every metro, which is the opposite of what --metro wants.
+    solo_towers = _TOWERS_SOLO_US if ("us" in regions and not metro_area) else []
 
     # Distribute nodes across regions proportionally to tower count
     available_towers = []
     for region in regions:
         towers = tower_db.get(region, [])
+        if metro_area:
+            towers = _towers_in_metro(towers, metro_area)
         for t in towers:
             available_towers.append((region, t))
 
     if not available_towers:
+        if metro_area:
+            raise ValueError(
+                f"No towers within {metro_area['radius_nm']} nm of {metro_area['name']} for regions: {regions}"
+            )
         raise ValueError(f"No towers available for regions: {regions}")
+
+    if metro_area:
+        ring_spec = _rings_in_metro(ring_spec, metro_area)
+        n_clusters = min(n_clusters, len(ring_spec))
 
     # ── Pre-fetch real towers from Tower API for metro areas ──────────────────
     # Each metro area gets multiple real towers so nodes in the same city
@@ -829,10 +907,9 @@ def generate_fleet(
                 from retina_simulation.tower_resolver import lookup_metro_towers
             except ImportError:
                 from tower_resolver import lookup_metro_towers
-            all_metro_centers = []
-            for region in regions:
-                for t in tower_db.get(region, []):
-                    all_metro_centers.append(t)
+            # Only the towers actually in play — under --metro this is a handful
+            # of centres instead of every metro on the continent.
+            all_metro_centers = [t for _region, t in available_towers]
             metro_api_towers_raw = lookup_metro_towers(all_metro_centers, radius_km=80, limit=50)
             # Map back to (lat, lon) → tower list
             for t in all_metro_centers:
@@ -846,7 +923,9 @@ def generate_fleet(
 
     # Allocate solo and cluster node counts, carving both from metro allocation
     n_solo = max(1, round(n_nodes * solo_fraction)) if solo_towers else 0
-    n_cluster = max(0, n_cluster)
+    # No rings survived the metro filter → give their budget back to metro nodes
+    # instead of silently generating fewer nodes than asked for.
+    n_cluster = max(0, n_cluster) if n_clusters > 0 else 0
     n_metro = max(0, n_nodes - n_solo - n_cluster)
 
     # Track how many times each API tower has been used (per metro) for
@@ -872,7 +951,9 @@ def generate_fleet(
             fc_hz = t["fc_hz"]
             callsign = t["tx_callsign"]
 
-        region_prefix = region.upper()
+        # Metro-scoped fleets are named for the metro (synth-GVL-0001) rather
+        # than the continent, so node IDs say where they actually are.
+        region_prefix = metro.strip().upper() if metro else region.upper()
         node_id = f"synth-{region_prefix}-{i + 1:04d}"
         rx_lat, rx_lon = _place_rx_on_land(
             tx_lat,
@@ -1008,6 +1089,13 @@ def main():
     parser = argparse.ArgumentParser(description="Generate fleet of synthetic node configs")
     parser.add_argument("--nodes", type=int, default=200, help="Number of nodes (100-1000)")
     parser.add_argument("--regions", type=str, default="us", help="Comma-separated regions: us,eu,au")
+    parser.add_argument(
+        "--metro",
+        type=str,
+        default=None,
+        choices=sorted(_KNOWN_METROS),
+        help="Restrict the whole fleet to one metro area (drops solo/rural nodes)",
+    )
     parser.add_argument("--output", type=str, default="fleet_config.json", help="Output file path")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
@@ -1024,7 +1112,8 @@ def main():
         dest="n_clusters",
         type=int,
         default=5,
-        help="Number of metro coverage rings (more = multinode spread across the map)",
+        help="Number of metro coverage rings (more = multinode spread across "
+        "the map). Capped at the number of rings that survive --metro.",
     )
     parser.add_argument(
         "--ring-radius-km", type=float, default=18.0, help="Receiver ring radius around each metro core"
@@ -1053,8 +1142,9 @@ def main():
         ring_beam_width_deg=args.ring_beam_width_deg,
         ring_max_range_km=args.ring_max_range_km,
         ring_aim=args.ring_aim,
+        metro=args.metro,
     )
-    cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters)
+    cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters, metro=args.metro)
     summary = fleet_summary(nodes)
 
     config = {
