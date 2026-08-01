@@ -35,8 +35,12 @@ from typing import Optional
 
 # Add parent dir so we can import simulation packages
 
-from retina_simulation.world import SimulationWorld, NodeConfig, MetroCell
-from retina_simulation.generator import generate_fleet, fleet_summary, coverage_cells
+from retina_simulation.world import (
+    SimulationWorld, NodeConfig, MetroCell, waypoints_for_metro,
+)
+from retina_simulation.generator import (
+    _KNOWN_METROS, generate_fleet, fleet_summary, coverage_cells,
+)
 from retina_simulation.tower_resolver import resolve_towers, apply_tower_assignments
 
 logging.basicConfig(
@@ -225,9 +229,11 @@ class FleetOrchestrator:
         hub_radial: bool = True,
         metro_traffic_frac: float = 0.6,
         cells: Optional[list[dict]] = None,
+        metro: Optional[str] = None,
     ):
         self.node_configs = node_configs
         self.cells = cells or []
+        self.metro = metro
         self.host = host
         self.port = port
         self.mode = mode
@@ -266,13 +272,21 @@ class FleetOrchestrator:
         center_lat = sum(lats) / len(lats)
         center_lon = sum(lons) / len(lons)
 
-        self.world = SimulationWorld(center_lat=center_lat, center_lon=center_lon)
-        # Aircraft population is a nationwide field (alive map), independent of
-        # sensor count — floor it high so the whole US stays populated, not just
-        # the metros. --min-aircraft/--max-aircraft override.
+        self.world = SimulationWorld(
+            center_lat=center_lat, center_lon=center_lon,
+            waypoints=waypoints_for_metro(self.metro),
+        )
+        # Aircraft population is a field, not a per-sensor count. Nationwide it is
+        # floored high so the whole US stays populated; a metro-scoped fleet covers
+        # ~1/40th of that area, so the same floor would pack hundreds of aircraft
+        # into one terminal area. --min-aircraft/--max-aircraft override either way.
         n = len(self.node_configs)
-        auto_min_aircraft = max(150, n // 2)
-        auto_max_aircraft = max(300, n)
+        if self.metro:
+            auto_min_aircraft = max(15, n // 2)
+            auto_max_aircraft = max(30, n)
+        else:
+            auto_min_aircraft = max(150, n // 2)
+            auto_max_aircraft = max(300, n)
         self.world.min_aircraft = self.min_aircraft or auto_min_aircraft
         self.world.max_aircraft = self.max_aircraft or auto_max_aircraft
         if self.world.max_aircraft < self.world.min_aircraft:
@@ -308,10 +322,12 @@ class FleetOrchestrator:
             self.world.frac_metro_traffic = self.metro_traffic_frac
 
         log.info(
-            "SimulationWorld: center=(%.2f, %.2f), %d nodes, %d-%d aircraft, %d metro cells",
+            "SimulationWorld: center=(%.2f, %.2f), %d nodes, %d-%d aircraft, "
+            "%d metro cells, waypoint net=%s (%d)",
             center_lat, center_lon, len(self.node_configs),
             self.world.min_aircraft, self.world.max_aircraft,
             len(self.world.metro_cells),
+            self.metro or "nationwide", len(self.world.waypoints),
         )
 
     async def _connect_batch(self, configs: list[dict]) -> list[dict]:
@@ -944,21 +960,6 @@ async def _validate_against_server(
             log.debug("Validation check failed: %s", e)
 
 
-# ── Predefined metro areas ──────────────────────────────────────────────────
-_KNOWN_METROS = {
-    "atl": {"name": "Atlanta", "lat": 33.749, "lon": -84.388, "radius_nm": 80},
-    "gvl": {"name": "Greenville", "lat": 34.852, "lon": -82.394, "radius_nm": 60},
-    "clt": {"name": "Charlotte", "lat": 35.227, "lon": -80.843, "radius_nm": 70},
-    "nyc": {"name": "New York", "lat": 40.748, "lon": -73.986, "radius_nm": 80},
-    "dca": {"name": "Washington DC", "lat": 38.935, "lon": -77.079, "radius_nm": 70},
-    "chi": {"name": "Chicago", "lat": 41.872, "lon": -87.624, "radius_nm": 80},
-    "den": {"name": "Denver", "lat": 39.739, "lon": -104.990, "radius_nm": 80},
-    "lax": {"name": "Los Angeles", "lat": 34.052, "lon": -118.244, "radius_nm": 80},
-    "dfw": {"name": "Dallas-Fort Worth", "lat": 32.897, "lon": -97.038, "radius_nm": 80},
-    "kc": {"name": "Kansas City", "lat": 39.298, "lon": -94.714, "radius_nm": 70},
-}
-
-
 def _parse_metro_areas(metros_str: str) -> list[dict]:
     """Parse comma-separated metro codes into area dicts for AdsbLolClient."""
     result = []
@@ -988,8 +989,10 @@ async def main_async(args):
         all_nodes = generate_fleet(
             n_nodes=args.nodes, regions=regions, seed=args.seed,
             n_cluster=args.n_cluster, n_clusters=args.n_clusters,
+            metro=getattr(args, "metro", None),
         )
-        cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters)
+        cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters,
+                               metro=getattr(args, "metro", None))
 
     # When --metros is specified, filter nodes to only those near selected metros
     if getattr(args, "metros", "") and args.metros:
@@ -1049,6 +1052,7 @@ async def main_async(args):
         hub_radial=not args.no_hub_radial,
         metro_traffic_frac=args.metro_traffic_frac,
         cells=cells,
+        metro=getattr(args, "metro", None),
     )
 
     # Build shared simulation world
@@ -1093,8 +1097,11 @@ async def main_async(args):
         ))
 
     # Real ADS-B from adsb.lol — inject real air traffic when metro areas are configured.
-    if args.validation_url and hasattr(args, "metros") and args.metros:
-        metro_areas = _parse_metro_areas(args.metros)
+    # --metro (generation-time scoping) implies the same area for real traffic, so a
+    # Greenville-only fleet gets Greenville ADS-B without also passing --metros.
+    adsb_metros = getattr(args, "metros", "") or getattr(args, "metro", "") or ""
+    if args.validation_url and adsb_metros:
+        metro_areas = _parse_metro_areas(adsb_metros)
         if metro_areas:
             tasks.append(_push_real_adsb(
                 orchestrator, args.validation_url,
@@ -1143,7 +1150,8 @@ def main():
     parser.add_argument("--n-clusters", "--n-rings", dest="n_clusters", type=int, default=5,
                         help="Number of distinct metro rings to fan the --n-cluster budget "
                              "across (5 = Dallas, Chicago, Atlanta, Denver, Kansas City; "
-                             "1 = single Dallas ring). Matches the generator default.")
+                             "1 = single Dallas ring). Capped at the number of rings that "
+                             "survive --metro. Matches the generator default.")
     parser.add_argument("--host", type=str, default="localhost",
                         help="Server hostname")
     parser.add_argument("--port", type=int, default=3012,
@@ -1177,9 +1185,15 @@ def main():
                         help="Base URL for validation API calls")
     parser.add_argument("--ground-truth-path", type=str, default="ground_truth.json",
                         help="Path to save ground truth data")
+    parser.add_argument("--metro", type=str, default=None,
+                        choices=sorted(_KNOWN_METROS),
+                        help="Generate the whole fleet inside one metro area (drops "
+                             "solo/rural nodes and non-local rings). Applies at "
+                             "generation time, so it needs no --config.")
     parser.add_argument("--metros", type=str, default="",
                         help="Comma-separated metro codes to focus on (e.g. atl,gvl). "
-                             "Filters fleet to these metros and injects real ADS-B from adsb.lol. "
+                             "Filters an already-generated fleet to these metros and "
+                             "injects real ADS-B from adsb.lol. "
                              f"Available: {','.join(_KNOWN_METROS.keys())}")
     parser.add_argument("--no-hub-radial", action="store_true",
                         help="Disable hub-radial flight planning (use legacy random-anchor spawn)")
