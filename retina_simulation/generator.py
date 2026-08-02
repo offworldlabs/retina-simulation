@@ -692,6 +692,171 @@ def _place_rx_on_land(
     return (round(tx_lat, 6), round(tx_lon, 6))
 
 
+def _subtended_deg(from_lat, from_lon, a, b) -> float:
+    """Angle between two towers as seen from a point, in degrees.
+
+    This — not the towers' bearing separation from the metro centre — is what
+    conditions a two-illuminator fix.  The bistatic range gradient is
+    b = u_tx + u_rx, so two measurements are independent to the extent their
+    transmitters lie in different directions *from the target*.  Two towers on
+    a similar bearing from the metro core but far apart in range still subtend
+    a usable angle across most of the coverage area.
+    """
+    ba = _bearing_between(from_lat, from_lon, a[0], a[1])
+    bb = _bearing_between(from_lat, from_lon, b[0], b[1])
+    return abs((ba - bb + 180.0) % 360.0 - 180.0)
+
+
+def _beam_footprint(rx_lat, rx_lon, beam_azimuth_deg, beam_width_deg, max_range_km):
+    """Sample points across a receiver's beam, for evaluating pair geometry.
+
+    Deliberately samples the *edges* as well as the centre: a pair can condition
+    well at boresight and collapse at the beam edge, and selecting on a single
+    representative point would bake that blind spot in.
+    """
+    R = 6371.0
+    pts = []
+    half = beam_width_deg / 2.0
+    for frac in (0.35, 0.7, 1.0):
+        for off in (-half, -half / 2, 0.0, half / 2, half):
+            br = math.radians((beam_azimuth_deg + off) % 360.0)
+            d = max_range_km * frac
+            pts.append(
+                (
+                    rx_lat + math.degrees((d * math.cos(br)) / R),
+                    rx_lon + math.degrees((d * math.sin(br)) / (R * math.cos(math.radians(rx_lat)))),
+                )
+            )
+    return pts
+
+
+def _pick_illuminator_pair(rx_lat, rx_lon, beam_azimuth_deg, beam_width_deg, max_range_km, towers, min_eirp_dbm):
+    """Choose the two towers giving the best-conditioned pair for this receiver.
+
+    Scored on the *worst* subtended angle across the beam footprint rather than
+    the mean, because a pair that degenerates anywhere in the footprint is
+    unreliable there.  Towers are already one-per-site in _TOWERS_US; co-sited
+    transmitters would share an ellipse and be worthless as a pair.
+
+    Returns (tower_a, tower_b) or None when nothing clears min_eirp_dbm.
+    """
+    usable = [t for t in towers if _TOWER_EIRP_DBM.get(t[4], _DEFAULT_EIRP_DBM) >= min_eirp_dbm]
+    if len(usable) < 2:
+        return None
+    probes = _beam_footprint(rx_lat, rx_lon, beam_azimuth_deg, beam_width_deg, max_range_km)
+    best, best_score = None, -1.0
+    for i in range(len(usable)):
+        for j in range(i + 1, len(usable)):
+            a, b = usable[i], usable[j]
+            if _haversine_km(a[0], a[1], b[0], b[1]) < 1.0:
+                continue  # same mast
+            worst = min(_subtended_deg(p[0], p[1], a, b) for p in probes)
+            if worst > best_score:
+                best, best_score = (a, b), worst
+    return best
+
+
+def _generate_dual_sites(
+    n_sites: int,
+    core_lat: float,
+    core_lon: float,
+    towers: list[tuple],
+    metro_radius_km: float,
+    prefix: str = "synth-GVL",
+    beam_width_deg: float = 41.0,
+    max_bistatic_range_km: float = 60.0,
+    min_eirp_dbm: float = 40.0,
+    aim: str = "core",
+    aim_jitter_deg: float = 30.0,
+) -> list[dict]:
+    """Generate n_sites receivers, each running two nodes on two illuminators.
+
+    This is how a real passive-radar site is built: one antenna, one RX
+    position, several receiver chains tuned to different transmitters.  The two
+    nodes therefore share rx position, altitude, beam azimuth, beam width and
+    range — they differ only in which tower they listen to.
+
+    The geometric payoff is that the two bistatic ellipses share a focus (the
+    common RX), so they intersect in at most two points and the beam almost
+    always excludes one.  A single site localises on its own, with the residual
+    ambiguity bounded by the antenna pattern rather than by a second receiver
+    tens of km away.
+
+    Position is well determined this way; velocity is not.  One pair gives two
+    Doppler projections for three velocity components, so it stays
+    under-determined unless the level-flight assumption is applied (which the
+    association stage does).  Two pairs — four nodes — give eight residuals
+    against five unknowns, and only then do the solver's residual gates regain
+    the discriminating power they lack at n=2.
+
+    Sites are placed at random across the metro rather than ringed around a
+    core, so their beams overlap each other far less than a ring's do.
+    """
+    if n_sites <= 0 or len(towers) < 2:
+        return []
+
+    nodes = []
+    for i in range(n_sites):
+        node_id = f"{prefix}-{i + 1:04d}"
+        rx_lat, rx_lon = _place_rx_on_land(
+            core_lat,
+            core_lon,
+            dist_min_km=5.0,
+            dist_max_km=max(10.0, metro_radius_km * 0.85),
+            display_node_id=node_id,
+        )
+        # Aim.  "random" spreads sectors and minimises inter-site overlap, but
+        # a beam pointed away from the traffic sees nothing: with 85% of
+        # aircraft routed through the metro core, random aiming left most sites
+        # idle and collapsed the solve rate by an order of magnitude.
+        #
+        # "core" aims at the core with jitter, which is also what a real
+        # operator would do — receivers are sited to cover the airspace of
+        # interest.  Inter-site overlap is not the enemy here the way it is for
+        # a ring: each dual site already self-solves from its own two
+        # illuminators, so a second site overlapping it upgrades the fix to
+        # four nodes rather than manufacturing a two-node ambiguity.
+        if aim == "random":
+            beam_azimuth = random.uniform(0.0, 360.0)
+        else:
+            beam_azimuth = (
+                _bearing_between(rx_lat, rx_lon, core_lat, core_lon) + random.uniform(-aim_jitter_deg, aim_jitter_deg)
+            ) % 360.0
+        pair = _pick_illuminator_pair(
+            rx_lat,
+            rx_lon,
+            beam_azimuth,
+            beam_width_deg,
+            max_bistatic_range_km,
+            towers,
+            min_eirp_dbm,
+        )
+        if pair is None:
+            continue
+        rx_alt_ft = round(random.uniform(100, 1500), 1)
+        for suffix, tower in zip("ab", pair):
+            tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
+            node = GeneratedNodeConfig(
+                node_id=f"{node_id}{suffix}",
+                rx_lat=round(rx_lat, 6),
+                rx_lon=round(rx_lon, 6),
+                rx_alt_ft=rx_alt_ft,
+                tx_lat=tx_lat,
+                tx_lon=tx_lon,
+                tx_alt_ft=tx_alt_ft,
+                fc_hz=fc_hz,
+                fs_hz=2_000_000,
+                beam_width_deg=round(beam_width_deg, 1),
+                max_range_km=round(max_bistatic_range_km, 1),
+                region="us",
+                tx_callsign=callsign,
+                beam_azimuth_deg=round(beam_azimuth, 2),
+                max_bistatic_range_km=round(max_bistatic_range_km, 1),
+            )
+            nodes.append(_node_dict(node))
+    return nodes
+
+
 def _generate_metro_solo(
     n: int,
     core_lat: float,
@@ -954,6 +1119,10 @@ def generate_fleet(
     ring_aim: str = "core",
     ring_spec: list = _RING_TXS,
     metro: str | None = None,
+    layout: str = "ring",
+    illuminator_band: str = "any",
+    dual_min_eirp_dbm: float = 40.0,
+    dual_aim: str = "core",
 ) -> list[dict]:
     """Generate a fleet of synthetic node configurations.
 
@@ -1211,6 +1380,35 @@ def generate_fleet(
     # shared VHF TX keeps Doppler inside the association gate. Spreading the
     # budget across metros puts overlap coverage where traffic actually flies.
     ring_nodes = []
+    if layout == "dual":
+        # Dual-illuminator sites replace the coverage ring entirely: they are
+        # two different answers to the same problem.  A ring buys geometry by
+        # surrounding the airspace with receivers that all overlap; a dual site
+        # buys it at the receiver, from two illuminators sharing one antenna.
+        if metro_area:
+            _dual_towers = [t for _r, t in available_towers] or _TOWERS_US
+            if illuminator_band == "vhf":
+                # All-VHF is a legitimate configuration to test on its own:
+                # VHF is the better illuminator on physics, and restricting to
+                # one band removes the cross-band question from the result.
+                _vhf = [t for t in _dual_towers if t[3] < 300e6]
+                if len(_vhf) >= 2:
+                    _dual_towers = _vhf
+            ring_nodes.extend(
+                _generate_dual_sites(
+                    n_sites=max(0, n_cluster) // 2,
+                    core_lat=metro_area["lat"],
+                    core_lon=metro_area["lon"],
+                    towers=_dual_towers,
+                    metro_radius_km=metro_area["radius_nm"] * _NM_TO_KM,
+                    prefix=f"synth-{metro.strip().upper()}-DUAL" if metro else "synth-DUAL",
+                    beam_width_deg=ring_beam_width_deg,
+                    max_bistatic_range_km=ring_max_range_km,
+                    min_eirp_dbm=dual_min_eirp_dbm,
+                    aim=dual_aim,
+                )
+            )
+        return nodes + ring_nodes
     for ring_id, spec, size in _active_rings(n_cluster, n_clusters, ring_spec):
         tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon = spec
         ring_nodes.extend(
@@ -1267,6 +1465,22 @@ def main():
     parser.add_argument("--output", type=str, default="fleet_config.json", help="Output file path")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
+        "--layout",
+        choices=("ring", "dual"),
+        default="ring",
+        help="ring: receivers circling a core, all aimed inward. "
+        "dual: receivers scattered across the metro, each "
+        "running two nodes on two illuminators from one "
+        "antenna (n-cluster is the node budget, so half "
+        "that many sites).",
+    )
+    parser.add_argument(
+        "--illuminator-band", choices=("any", "vhf"), default="any", help="restrict dual-site illuminators to VHF"
+    )
+    parser.add_argument(
+        "--dual-min-eirp-dbm", type=float, default=40.0, help="floor on the weaker illuminator of a dual pair"
+    )
+    parser.add_argument(
         "--n-cluster",
         "--n-ring",
         dest="n_cluster",
@@ -1306,6 +1520,10 @@ def main():
         seed=args.seed,
         n_cluster=args.n_cluster,
         n_clusters=args.n_clusters,
+        layout=args.layout,
+        illuminator_band=args.illuminator_band,
+        dual_min_eirp_dbm=args.dual_min_eirp_dbm,
+        dual_aim=args.dual_aim,
         ring_radius_km=args.ring_radius_km,
         ring_beam_width_deg=args.ring_beam_width_deg,
         ring_max_range_km=args.ring_max_range_km,
