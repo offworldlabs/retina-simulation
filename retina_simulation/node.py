@@ -839,6 +839,8 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
             fs_hz=nd.get("fs_hz", 2_000_000.0),
             beam_width_deg=nd.get("beam_width_deg", 41.0),
             max_range_km=nd.get("max_range_km", 50.0),
+            # Absent → monostatic range rule, so hardware nodes are unaffected.
+            max_bistatic_range_km=nd.get("max_bistatic_range_km"),
         )
         world.add_node(wc)
         node_configs.append(wc)
