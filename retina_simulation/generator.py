@@ -20,6 +20,26 @@ from dataclasses import asdict, dataclass
 # Each tower: (lat, lon, alt_ft, freq_hz, callsign)
 # Modeled after real VHF/UHF broadcast transmitters suitable for passive radar
 
+# Effective radiated power, dBm, keyed by callsign.  Kept beside the tower
+# tuples rather than inside them so the 5-element unpacking used throughout
+# this module stays valid.  Only populated for sites taken from real FCC
+# records; illuminator selection falls back to _DEFAULT_EIRP_DBM otherwise.
+#
+# The spread here is 65 dB — Caesars Head at 92.2 dBm against Spartanburg at
+# 27.0 — so a fleet that ignores EIRP treats a 0.5 W transmitter as the equal
+# of a megawatt one.
+_TOWER_EIRP_DBM = {
+    "WYFF": 92.2,  # Caesars Head
+    "WMYA-TV": 90.9,  # Fountain Inn
+    "WNTV": 84.7,  # Paris Mountain — Tower Finder's top pick for the metro
+    "WLOS": 83.7,  # Mt Pisgah
+    "WSPA-TV": 77.4,  # Hogback Mtn
+    "BLP00776": 57.0,  # near the core, low power
+    "W07DT-D": 50.0,  # Tryon NC
+    "BLP01065": 27.0,  # Spartanburg — geometrically valuable, radiologically weak
+}
+_DEFAULT_EIRP_DBM = 80.0
+
 _TOWERS_US = [
     # East Coast
     (33.75667, -84.33184, 1600, 195_000_000, "WSB-TV"),  # Atlanta
@@ -34,8 +54,22 @@ _TOWERS_US = [
     (30.33270, -81.65560, 1200, 575_000_000, "WJXT"),  # Jacksonville
     (36.85260, -75.97820, 1300, 539_000_000, "WAVY"),  # Norfolk
     (35.78700, -78.78170, 1500, 563_000_000, "WRAL"),  # Raleigh
-    (35.11194, -82.60639, 1962, 569_000_000, "WYFF"),  # Greenville SC (Caesars Head)
-    (35.17019, -82.29050, 2212, 201_000_000, "WSPA-TV"),  # Greenville SC (Hogback Mtn)
+    # ── Greenville SC ────────────────────────────────────────────────────────
+    # Real FCC facilities from the Tower Finder illuminator search, one entry
+    # per *distinct site*.  Twenty stations serve this market but they share
+    # only eight masts — Paris Mountain alone carries WNTV, WRET-TV, WGGS-TV,
+    # W10AJ-D and five LPTVs.  Co-sited transmitters are worthless as a
+    # bistatic pair (identical geometry, identical ellipse), so the table lists
+    # sites and the strongest station at each.
+    # alt is the radiating centre AMSL (ground + antenna height), in feet.
+    (34.941222, -82.410278, 3315, 183_000_000, "WNTV"),  # Paris Mountain
+    (34.647500, -82.270000, 1847, 599_000_000, "WMYA-TV"),  # Fountain Inn — south
+    (35.170194, -82.290500, 5437, 201_000_000, "WSPA-TV"),  # Hogback Mtn
+    (35.111944, -82.606389, 5058, 569_000_000, "WYFF"),  # Caesars Head
+    (35.222222, -82.549444, 5220, 213_000_000, "WLOS"),  # Mt Pisgah
+    (34.970111, -81.948391, 794, 195_000_000, "BLP01065"),  # Spartanburg — east
+    (35.266278, -82.244111, 3186, 177_000_000, "W07DT-D"),  # Tryon NC
+    (34.875111, -82.338211, 984, 183_000_000, "BLP00776"),  # near the core
     # Midwest
     (41.87150, -87.62440, 1650, 191_000_000, "WBBM-TV"),  # Chicago
     (42.33140, -83.04580, 1200, 551_000_000, "WXYZ-TV"),  # Detroit
@@ -156,11 +190,12 @@ _RING_TXS = [
     (33.74900, -84.38800, 1050, 199_000_000, "WSB-RING", 33.6407, -84.4277),  # ATL
     (39.73920, -104.99030, 5300, 201_000_000, "KCNC-RING", 39.8561, -104.6737),  # DEN
     (39.09970, -94.57860, 900, 203_000_000, "KMBC-RING", 39.2976, -94.7139),  # MCI Kansas City
-    # WSPA-TV is a real VHF-high (RF ch 11, 201 MHz) illuminator 31 km NNW of GSP —
-    # the only VHF station in the Greenville market, so it shares 201 MHz with the
-    # DEN ring above. Harmless: rings never overlap geographically, and association
-    # gating is per-node Doppler, not per-frequency.
-    (35.17019, -82.29050, 2212, 201_000_000, "WSPA-RING", 34.8957, -82.2189),  # GSP Greenville SC
+    # WSPA-TV, RF ch 11 (201 MHz) on Hogback Mtn, 31 km NNW of GSP.  It shares
+    # 201 MHz with the DEN ring above, which is harmless: rings never overlap
+    # geographically.  (An earlier version of this note said the market had no
+    # other VHF station — it has several; see _TOWERS_US.  The ring uses this
+    # one because it is the strongest VHF site with a clear line to the core.)
+    (35.170194, -82.290500, 5437, 201_000_000, "WSPA-RING", 34.8957, -82.2189),  # GSP Greenville SC
 ]
 
 
