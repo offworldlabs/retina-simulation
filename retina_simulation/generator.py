@@ -283,18 +283,26 @@ class GeneratedNodeConfig:
     region: str = "us"
     tx_callsign: str = ""
     beam_azimuth_deg: float | None = None  # explicit Yagi aim; None → broadside
+    # Bistatic range limit: (RX→target) + (target→TX) − baseline.  That sum is
+    # what the delay measures and what sets received power, so it is the
+    # physical detection limit; max_range_km is a monostatic approximation
+    # retained for hardware nodes.  None → omitted from the wire format.
+    max_bistatic_range_km: float | None = None
 
 
 def _node_dict(node: GeneratedNodeConfig) -> dict:
-    """Serialize a node, omitting an unset beam_azimuth_deg.
+    """Serialize a node, omitting unset optional geometry keys.
 
     The backend solver does `float(node_cfg["beam_azimuth_deg"])` whenever the
     key is present, so a null on the wire would crash it. Dropping the key for
     broadside nodes makes the backend fall back to its own broadside auto-aim.
+    max_bistatic_range_km is dropped for the same reason and so that its
+    absence unambiguously means "use the monostatic rule".
     """
     d = asdict(node)
-    if d.get("beam_azimuth_deg") is None:
-        d.pop("beam_azimuth_deg", None)
+    for _optional in ("beam_azimuth_deg", "max_bistatic_range_km"):
+        if d.get(_optional) is None:
+            d.pop(_optional, None)
     return d
 
 
@@ -649,6 +657,101 @@ def _place_rx_on_land(
     return (round(tx_lat, 6), round(tx_lon, 6))
 
 
+def _generate_metro_solo(
+    n: int,
+    core_lat: float,
+    core_lon: float,
+    towers: list[tuple],
+    metro_radius_km: float,
+    prefix: str = "synth-SOLO",
+    beam_width_deg: float = 40.0,
+    max_bistatic_range_km: float = 60.0,
+    ring_radius_km: float = 18.0,
+    start_bearing_deg: float = 30.0,
+) -> list[dict]:
+    """Generate n isolated receivers on the metro rim, each aimed outward.
+
+    These exist to keep the single-node ellipse-arc path exercised.  Every
+    receiver in the coverage ring aims *inward* at the core, so their beams all
+    intersect and essentially every detection associates into a multinode
+    solve — leaving the single-node arc code with almost no live coverage.
+
+    Isolation here is by beam geometry, not distance: the metro is far too
+    small for the nationwide pool's 400 km separation.  Each solo RX sits near
+    the rim and points away from the core, so its sector cannot intersect the
+    inward-aimed ring beams no matter how the range circles overlap.  The
+    association overlap zone is computed from beam sectors
+    (compute_overlap_zone), so this is the property that actually decides
+    whether detections stay single-node.
+
+    Each also takes its own illuminator rather than the shared ring TX, which
+    puts its Doppler outside the association gate — a second, independent
+    reason not to pair.
+    """
+    if n <= 0 or not towers:
+        return []
+
+    R = 6371.0
+    # Sit between the ring envelope and the metro edge.  Far enough out that
+    # the outward beam looks away from ring airspace; inside the metro radius
+    # so the node stays on the map with the rest of the fleet.
+    rim_km = max(ring_radius_km * 2.0, metro_radius_km * 0.80)
+
+    nodes = []
+    for i in range(n):
+        # Offset from the ring's own start bearing so a solo node never lands
+        # on top of a ring receiver.
+        bearing_deg = (start_bearing_deg + 360.0 * i / max(n, 1)) % 360.0
+        bearing_rad = math.radians(bearing_deg)
+        dlat = (rim_km * math.cos(bearing_rad)) / R
+        dlon = (rim_km * math.sin(bearing_rad)) / (R * math.cos(math.radians(core_lat)))
+        rx_lat = core_lat + math.degrees(dlat)
+        rx_lon = core_lon + math.degrees(dlon)
+
+        node_id = f"{prefix}-{i + 1:04d}"
+        if not _candidate_is_safe(rx_lat, rx_lon, node_id):
+            rx_lat, rx_lon = _place_rx_on_land(
+                core_lat,
+                core_lon,
+                dist_min_km=rim_km - 10,
+                dist_max_km=rim_km + 10,
+                display_node_id=node_id,
+            )
+
+        # Pick the illuminator *furthest* from the core among the metro towers:
+        # its baseline points away from ring airspace, so the bistatic ellipse
+        # opens outward too rather than folding back over the mesh.
+        tower = max(
+            towers,
+            key=lambda t: _haversine_km(t[0], t[1], rx_lat, rx_lon),
+        )
+        tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
+
+        # Aim directly away from the core — the isolation property.
+        beam_azimuth = (_bearing_between(rx_lat, rx_lon, core_lat, core_lon) + 180.0) % 360.0
+
+        node = GeneratedNodeConfig(
+            node_id=node_id,
+            rx_lat=round(rx_lat, 6),
+            rx_lon=round(rx_lon, 6),
+            rx_alt_ft=round(random.uniform(100, 1500), 1),
+            tx_lat=tx_lat,
+            tx_lon=tx_lon,
+            tx_alt_ft=tx_alt_ft,
+            fc_hz=fc_hz,
+            fs_hz=2_000_000,
+            beam_width_deg=round(beam_width_deg, 1),
+            max_range_km=round(max_bistatic_range_km, 1),
+            region="us",
+            tx_callsign=callsign,
+            beam_azimuth_deg=round(beam_azimuth, 2),
+            max_bistatic_range_km=round(max_bistatic_range_km, 1),
+        )
+        nodes.append(_node_dict(node))
+
+    return nodes
+
+
 def _generate_coverage_ring(
     n: int,
     core_lat: float,
@@ -711,6 +814,10 @@ def _generate_coverage_ring(
             region="us",
             tx_callsign=callsign,
             beam_azimuth_deg=round(beam_azimuth, 2),
+            # Ring receivers model real passive-radar reach, so they are limited
+            # on bistatic range.  max_range_km stays for consumers that have not
+            # been taught the bistatic rule.
+            max_bistatic_range_km=round(max_range_km, 1),
         )
         nodes.append(_node_dict(node))
 
@@ -766,7 +873,7 @@ def coverage_cells(
     n_clusters: int = 1,
     ring_spec: list = _RING_TXS,
     traffic_radius_km: float = 70.0,
-    metro: Optional[str] = None,
+    metro: str | None = None,
 ) -> list[dict]:
     """First-class metro-cell descriptors for the active rings.
 
@@ -811,7 +918,7 @@ def generate_fleet(
     ring_max_range_km: float = 60.0,
     ring_aim: str = "core",
     ring_spec: list = _RING_TXS,
-    metro: Optional[str] = None,
+    metro: str | None = None,
 ) -> list[dict]:
     """Generate a fleet of synthetic node configurations.
 
@@ -869,8 +976,14 @@ def generate_fleet(
     }
 
     # Solo towers — only available for US region (where rural towers are defined).
-    # A metro-scoped fleet has no solo nodes at all: solo placement exists to put
-    # receivers far from every metro, which is the opposite of what --metro wants.
+    #
+    # The nationwide pool separates receivers by 400 km, which cannot apply
+    # inside a metro, so --metro uses metro-scoped solo placement instead (see
+    # _metro_solo_nodes below).  Both exist for the same reason: solo receivers
+    # are the only way to exercise the single-node ellipse-arc path.  Without
+    # them every detection lands in an overlap zone and associates into a
+    # multinode solve — measured on the Greenville fleet as 15 of 16 nodes
+    # overlapping 1-11 neighbours, and single-node arcs nearly absent.
     solo_towers = _TOWERS_SOLO_US if ("us" in regions and not metro_area) else []
 
     # Distribute nodes across regions proportionally to tower count
@@ -922,7 +1035,13 @@ def generate_fleet(
             logging.warning("Tower API lookup failed, using hardcoded towers: %s", exc)
 
     # Allocate solo and cluster node counts, carving both from metro allocation
-    n_solo = max(1, round(n_nodes * solo_fraction)) if solo_towers else 0
+    if solo_towers:
+        n_solo = max(1, round(n_nodes * solo_fraction))
+    elif metro_area:
+        # Metro-scoped solo receivers, placed on the rim and aimed outward.
+        n_solo = max(1, round(n_nodes * solo_fraction))
+    else:
+        n_solo = 0
     # No rings survived the metro filter → give their budget back to metro nodes
     # instead of silently generating fewer nodes than asked for.
     n_cluster = max(0, n_cluster) if n_clusters > 0 else 0
@@ -986,7 +1105,21 @@ def generate_fleet(
         nodes.append(_node_dict(node))
 
     # --- Solo nodes (isolated — strictly one node per unique tower position) ---
-    if n_solo > 0:
+    if n_solo > 0 and metro_area:
+        # Metro-scoped: isolation comes from aiming away from the core, not
+        # from the nationwide pool's 400 km separation (impossible in a metro).
+        nodes.extend(
+            _generate_metro_solo(
+                n=n_solo,
+                core_lat=metro_area["lat"],
+                core_lon=metro_area["lon"],
+                towers=[t for _region, t in available_towers] or _TOWERS_US,
+                metro_radius_km=metro_area["radius_nm"] * _NM_TO_KM,
+                ring_radius_km=ring_radius_km,
+                max_bistatic_range_km=ring_max_range_km,
+            )
+        )
+    elif n_solo > 0:
         # All US positions that must be avoided when extending the pool
         # Avoid positions: metro towers only.  Named solo towers are gated
         # inside _extend_solo_pool with the same min_sep check so they are

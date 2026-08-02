@@ -97,7 +97,7 @@ _REGIONAL_WAYPOINTS: dict[str, list[tuple[float, float]]] = {
 }
 
 
-def waypoints_for_metro(metro: Optional[str]) -> list[tuple[float, float]]:
+def waypoints_for_metro(metro: str | None) -> list[tuple[float, float]]:
     """Waypoint net for a metro code, falling back to the nationwide net.
 
     An unknown or absent code returns _US_WAYPOINTS, so callers that don't know
@@ -163,7 +163,15 @@ class NodeConfig:
     # Detection geometry
     beam_azimuth_deg: float | None = None  # None → auto broadside in add_node
     beam_width_deg: float = 41.0  # Yagi half-power beamwidth (40-42° spec)
-    max_range_km: float = 50.0  # maximum detection range
+    max_range_km: float = 50.0  # maximum RX→target range (monostatic)
+    # Maximum *bistatic* range: (RX→target) + (target→TX) − baseline, i.e. the
+    # differential range the delay measurement actually represents, and what
+    # sets received power via the bistatic radar equation.  Physically the
+    # correct limit — it makes the footprint an ellipse with foci at RX and TX
+    # rather than a circle around the RX.
+    # None keeps the older monostatic rule, so real hardware nodes carrying
+    # only max_range_km are unaffected.
+    max_bistatic_range_km: float | None = None
 
 
 def config_hash(config: NodeConfig) -> str:
@@ -283,7 +291,7 @@ def _pick_route(
     center_lat: float,
     center_lon: float,
     max_dist_km: float = 300,
-    waypoints: Optional[list[tuple[float, float]]] = None,
+    waypoints: list[tuple[float, float]] | None = None,
 ) -> list[tuple[float, float]]:
     """Pick a sequence of 2-4 waypoints near center forming a realistic route."""
     waypoints = waypoints if waypoints is not None else _US_WAYPOINTS
@@ -319,7 +327,7 @@ class SimulationWorld:
         self,
         center_lat: float = 34.85,
         center_lon: float = -82.39,
-        waypoints: Optional[list[tuple[float, float]]] = None,
+        waypoints: list[tuple[float, float]] | None = None,
     ):
         self.center_lat = center_lat
         self.center_lon = center_lon
@@ -522,9 +530,7 @@ class SimulationWorld:
         # runtime — pushed part of the commercial band below the literal, so
         # those aircraft were spawned with no transponder and showed up as dark.
         adsb_roll_floor = self.frac_anomalous + self.frac_drone + self.frac_dark
-        if (mode in ("adsb", "anomalous")
-                and object_type != "drone"
-                and roll >= adsb_roll_floor) or is_anomalous:
+        if (mode in ("adsb", "anomalous") and object_type != "drone" and roll >= adsb_roll_floor) or is_anomalous:
             has_adsb = True
             adsb_hex = f"{random.randint(0x100000, 0xFFFFFF):06x}"
             letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -719,10 +725,45 @@ class SimulationWorld:
             ac.speed_km_s = random.uniform(0.35, 0.50)
 
     def _aircraft_in_detection_cone(self, ac: SimulatedAircraft, node: NodeConfig) -> bool:
-        """Check if aircraft is within the node's detection cone."""
-        dist = _haversine_km(node.rx_lat, node.rx_lon, ac.lat, ac.lon)
-        if dist > node.max_range_km:
-            return False
+        """Check if aircraft is within the node's detection cone.
+
+        Range is limited on *bistatic* range when the node declares one — the
+        sum of both legs minus the baseline, which is what the delay actually
+        measures and what sets received power.  A monostatic RX-distance limit
+        ignores the TX leg entirely, so it accepts targets far behind the
+        transmitter and rejects near ones on a long baseline.  Nodes without
+        max_bistatic_range_km keep the monostatic rule so real hardware is
+        unaffected.
+        """
+        if node.max_bistatic_range_km is not None:
+            rx_alt_km = node.rx_alt_ft * 0.3048 / 1000.0
+            tx_alt_km = node.tx_alt_ft * 0.3048 / 1000.0
+            target_enu = _lla_to_enu(
+                ac.lat,
+                ac.lon,
+                ac.alt_km,
+                node.rx_lat,
+                node.rx_lon,
+                rx_alt_km,
+            )
+            tx_enu = _lla_to_enu(
+                node.tx_lat,
+                node.tx_lon,
+                tx_alt_km,
+                node.rx_lat,
+                node.rx_lon,
+                rx_alt_km,
+            )
+            # _bistatic_delay returns the differential range in µs; multiply
+            # back by c to compare in km.  Reused rather than recomputing the
+            # two legs so the gate and the emitted delay can never disagree.
+            diff_range_km = _bistatic_delay(target_enu, tx_enu, (0.0, 0.0, 0.0)) * C_KM_US
+            if diff_range_km > node.max_bistatic_range_km:
+                return False
+        else:
+            dist = _haversine_km(node.rx_lat, node.rx_lon, ac.lat, ac.lon)
+            if dist > node.max_range_km:
+                return False
 
         bearing = _bearing_deg(node.rx_lat, node.rx_lon, ac.lat, ac.lon)
         angle_diff = abs((bearing - node.beam_azimuth_deg + 180) % 360 - 180)
