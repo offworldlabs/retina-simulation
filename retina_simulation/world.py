@@ -325,8 +325,13 @@ class SimulationWorld:
         # Target count range
         self.min_aircraft = 5
         self.max_aircraft = 15
-        # Object type spawn fractions (adjustable at runtime)
-        self.frac_anomalous: float = 0.05
+        # Object type spawn fractions (adjustable at runtime).
+        # frac_anomalous doubles as the master gate for ALL anomaly generation:
+        # at 0 it also suppresses the mid-flight anomaly scheduler
+        # (_maybe_schedule_anomaly), which would otherwise keep turning normal
+        # commercial aircraft anomalous at its own hardcoded rate. One switch,
+        # so "anomalies off" means off — and raising it turns everything back on.
+        self.frac_anomalous: float = 0.0
         self.frac_drone: float = 0.10
         self.frac_dark: float = 0.15
         # remaining fraction = commercial aircraft with ADS-B
@@ -450,11 +455,14 @@ class SimulationWorld:
     def _spawn_aircraft(self, mode: str = "detection") -> SimulatedAircraft:
         """Spawn a new aircraft along a realistic flight corridor.
 
-        Object types are selected probabilistically:
-          - 70% commercial aircraft (with ADS-B in adsb/anomalous modes)
-          - 15% dark aircraft (no ADS-B transponder)
-          - 10% drones (low/slow)
-          -  5% anomalous objects (erratic behavior)
+        Object types are selected probabilistically from the frac_* instance
+        attributes: dark aircraft (no transponder), drones (low/slow), anomalous
+        objects (erratic), and commercial aircraft with ADS-B as the remainder.
+        frac_anomalous defaults to 0 — see __init__.
+
+        mode="anomalous" is an explicit opt-in that injects anomalies regardless
+        of frac_anomalous; it is a testing mode and is not used by any deployment
+        (every compose profile sets FLEET_MODE=adsb).
         """
         oid = f"obj-{self._next_id:05d}"
         self._next_id += 1
@@ -496,7 +504,17 @@ class SimulationWorld:
 
         # Anomalous objects also get ADS-B — anomalous means unusual flight
         # behaviour (speed/altitude/heading changes), NOT transponder absence.
-        if mode in ("adsb", "anomalous") and object_type != "drone" and roll >= 0.30 or is_anomalous:
+        #
+        # The floor must be the SAME cumulative boundary the type roll used for
+        # "commercial" above. It was previously hardcoded to 0.30, which silently
+        # assumed the original defaults (0.05 + 0.10 + 0.15). Any other fractions
+        # — including anything set through the Physics Settings slider at
+        # runtime — pushed part of the commercial band below the literal, so
+        # those aircraft were spawned with no transponder and showed up as dark.
+        adsb_roll_floor = self.frac_anomalous + self.frac_drone + self.frac_dark
+        if (mode in ("adsb", "anomalous")
+                and object_type != "drone"
+                and roll >= adsb_roll_floor) or is_anomalous:
             has_adsb = True
             adsb_hex = f"{random.randint(0x100000, 0xFFFFFF):06x}"
             letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -552,7 +570,14 @@ class SimulationWorld:
 
     def _maybe_schedule_anomaly(self, is_anomalous: bool, object_type: str) -> dict:
         """Return kwargs to schedule a mid-flight anomaly event on ~8% of
-        normal commercial aircraft.  Already-anomalous or drones are skipped."""
+        normal commercial aircraft.  Already-anomalous or drones are skipped.
+
+        Gated on frac_anomalous: this rate is larger than the spawn-time
+        fraction, so without the gate, zeroing frac_anomalous would still leave
+        the majority of anomalies running (they just appear 30-120s late).
+        """
+        if self.frac_anomalous <= 0:
+            return {}
         if is_anomalous or object_type == "drone":
             return {}
         if random.random() > 0.08:

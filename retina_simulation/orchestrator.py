@@ -807,7 +807,9 @@ async def _poll_simulation_config(
             cfg = await loop.run_in_executor(None, _fetch)
             updated_at = cfg.get("_updated_at", 0.0)
             if updated_at > last_updated_at:
-                orchestrator.world.frac_anomalous = float(cfg.get("frac_anomalous", 0.05))
+                # Fallback matches SimulationWorld's default (anomalies off), so a
+                # payload missing the key cannot silently switch them back on.
+                orchestrator.world.frac_anomalous = float(cfg.get("frac_anomalous", 0.0))
                 orchestrator.world.frac_drone     = float(cfg.get("frac_drone",     0.10))
                 orchestrator.world.frac_dark      = float(cfg.get("frac_dark",      0.15))
                 if "min_aircraft" in cfg:
