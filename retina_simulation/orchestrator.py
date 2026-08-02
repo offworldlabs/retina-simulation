@@ -32,6 +32,7 @@ import ssl
 import time
 from datetime import datetime, timezone
 
+# Add parent dir so we can import simulation packages
 from retina_simulation.generator import (
     _KNOWN_METROS,
     coverage_cells,
@@ -39,8 +40,6 @@ from retina_simulation.generator import (
     generate_fleet,
 )
 from retina_simulation.tower_resolver import apply_tower_assignments, resolve_towers
-
-# Add parent dir so we can import simulation packages
 from retina_simulation.world import (
     MetroCell,
     NodeConfig,
@@ -246,8 +245,8 @@ class FleetOrchestrator:
         max_range_km: float = 0.0,
         hub_radial: bool = True,
         metro_traffic_frac: float = 0.6,
-        cells: Optional[list[dict]] = None,
-        metro: Optional[str] = None,
+        cells: list[dict] | None = None,
+        metro: str | None = None,
     ):
         self.node_configs = node_configs
         self.cells = cells or []
@@ -854,7 +853,9 @@ async def _poll_simulation_config(
             cfg = await loop.run_in_executor(None, _fetch)
             updated_at = cfg.get("_updated_at", 0.0)
             if updated_at > last_updated_at:
-                orchestrator.world.frac_anomalous = float(cfg.get("frac_anomalous", 0.05))
+                # Fallback matches SimulationWorld's default (anomalies off), so a
+                # payload missing the key cannot silently switch them back on.
+                orchestrator.world.frac_anomalous = float(cfg.get("frac_anomalous", 0.0))
                 orchestrator.world.frac_drone = float(cfg.get("frac_drone", 0.10))
                 orchestrator.world.frac_dark = float(cfg.get("frac_dark", 0.15))
                 if "min_aircraft" in cfg:
