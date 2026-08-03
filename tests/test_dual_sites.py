@@ -119,3 +119,74 @@ class TestAim:
     def test_random_aim_is_still_available(self):
         _fleet, sites = _dual_sites(dual_aim="random")
         assert sites
+
+
+class TestGeneratorCLI:
+    """main() must be able to supply every argument generate_fleet takes.
+
+    --dual-aim was added to generate_fleet and to the offline bench but never
+    registered on the generator's own parser, while main() passed
+    args.dual_aim regardless.  Nothing caught it: every test and the bench call
+    generate_fleet() directly, and the CLI runs only in the fleet container's
+    entrypoint — so the break surfaced as a staging deploy coming up with zero
+    synthetic nodes.
+    """
+
+    def _parser_dests(self):
+        import argparse
+        from unittest import mock
+
+        import retina_simulation.generator as gen
+
+        captured = {}
+        real_parse = argparse.ArgumentParser.parse_args
+
+        def _capture(self, *a, **kw):
+            captured["dests"] = {act.dest for act in self._actions}
+            raise SystemExit(0)  # stop before generating a fleet
+
+        with mock.patch.object(argparse.ArgumentParser, "parse_args", _capture):
+            try:
+                gen.main()
+            except SystemExit:
+                pass
+        assert real_parse is argparse.ArgumentParser.parse_args
+        return captured["dests"]
+
+    def test_every_arg_main_reads_is_registered(self):
+        import ast
+        import inspect
+
+        import retina_simulation.generator as gen
+
+        src = inspect.getsource(gen.main)
+        tree = ast.parse(src.lstrip())
+        used = {
+            node.attr for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "args"
+        }
+        missing = used - self._parser_dests()
+        assert not missing, f"main() reads unregistered args: {sorted(missing)}"
+
+    def test_dual_aim_is_registered_and_defaults_to_core(self):
+        import argparse
+        from unittest import mock
+
+        import retina_simulation.generator as gen
+
+        seen = {}
+
+        def _capture(self, *a, **kw):
+            seen["ns"] = argparse.Namespace(**{
+                act.dest: act.default for act in self._actions
+            })
+            raise SystemExit(0)
+
+        with mock.patch.object(argparse.ArgumentParser, "parse_args", _capture):
+            try:
+                gen.main()
+            except SystemExit:
+                pass
+        assert seen["ns"].dual_aim == "core"

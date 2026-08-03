@@ -1467,6 +1467,12 @@ def main():
                         help="restrict dual-site illuminators to VHF")
     parser.add_argument("--dual-min-eirp-dbm", type=float, default=40.0,
                         help="floor on the weaker illuminator of a dual pair")
+    parser.add_argument("--dual-aim", choices=("core", "random"), default="core",
+                        help="core: aim dual sites at the metro core with jitter. "
+                             "random: scatter sectors to minimise inter-site "
+                             "overlap — measured to starve the layout, because "
+                             "85%% of traffic runs through the core and the solve "
+                             "rate collapsed from 105 to 9.")
     parser.add_argument("--n-cluster", "--n-ring", dest="n_cluster", type=int, default=30,
                         help="Total coverage-ring receivers (split across rings)")
     parser.add_argument("--n-clusters", "--n-rings", dest="n_clusters", type=int, default=5,
