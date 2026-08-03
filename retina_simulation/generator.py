@@ -1305,6 +1305,13 @@ def generate_fleet(
             max_range_km=round(max_range, 1),
             region=region,
             tx_callsign=callsign,
+            # Every bistatic receiver is bounded by differential range; a circle
+            # on the RX is never the true footprint.  These base nodes were the
+            # last path still declaring only a monostatic limit, which left them
+            # gating and rendering as circles while the ring, solo and dual
+            # paths all used the ellipse.  The randomised value carries over
+            # unchanged — it is the same number, read correctly.
+            max_bistatic_range_km=round(max_range, 1),
         )
         nodes.append(_node_dict(node))
 

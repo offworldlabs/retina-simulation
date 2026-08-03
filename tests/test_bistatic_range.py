@@ -98,3 +98,30 @@ class TestBistaticRangeGate:
         node = _node(60.0)
         node.beam_width_deg = 40.0
         assert world._aircraft_in_detection_cone(_aircraft(90.0, 10.0), node) is False
+
+
+class TestEveryNodeDeclaresABistaticLimit:
+    """A circle on the receiver is never a bistatic node's true footprint.
+
+    The ring, solo and dual paths all declared max_bistatic_range_km; the
+    generic region-node path did not, so those nodes alone kept gating and
+    rendering as circles — visible on staging as three synthetic nodes
+    reporting bistatic=None while every other node reported 60.0.
+    """
+
+    def test_metro_fleet_is_uniformly_bistatic(self):
+        from retina_simulation.generator import generate_fleet
+
+        fleet = generate_fleet(n_nodes=15, metro="gvl", n_cluster=10,
+                               n_clusters=1, use_tower_api=False, seed=42)
+        missing = [n["node_id"] for n in fleet
+                   if n.get("max_bistatic_range_km") is None]
+        assert not missing, f"nodes still monostatic: {missing}"
+
+    def test_the_limit_matches_the_declared_range(self):
+        from retina_simulation.generator import generate_fleet
+
+        fleet = generate_fleet(n_nodes=15, metro="gvl", n_cluster=10,
+                               n_clusters=1, use_tower_api=False, seed=7)
+        for n in fleet:
+            assert n["max_bistatic_range_km"] == n["max_range_km"], n["node_id"]
