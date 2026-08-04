@@ -1133,6 +1133,12 @@ def _generate_scatter_sites(
 
         width = min(75.0, max(25.0, random.gauss(beam_width_deg, 8.0)))
         # Mode at 0.7 of the ceiling: most setups fall short of the best case.
+        # NOTE: `reach` is a DIFFERENTIAL range (Δ = R_tx + R_rx − L), and it
+        # is assigned to both max_bistatic_range_km (its true meaning) and
+        # max_range_km (the RX-circle approximation of it).  Consumers that
+        # know the bistatic rule read the first; the second is only a
+        # fallback and reads up to 2x too large away from the transmitter —
+        # same convention as the ring path.
         reach = max_bistatic_range_km * random.triangular(0.40, 1.0, 0.70)
 
         node = GeneratedNodeConfig(
@@ -1215,6 +1221,7 @@ def coverage_cells(
     ring_spec: list = _RING_TXS,
     traffic_radius_km: float = 70.0,
     metro: Optional[str] = None,
+    layout: str = "ring",
 ) -> list[dict]:
     """First-class metro-cell descriptors for the active rings.
 
@@ -1227,6 +1234,23 @@ def coverage_cells(
     filter generate_fleet uses, so the cells always describe the nodes that were
     actually generated.
     """
+    if layout in ("dual", "scatter"):
+        # These layouts replace the ring; emitting ring cells for them wrote a
+        # fleet_config.json describing an airspace no generated node was
+        # placed around — exactly the disagreement the docstring above rules
+        # out.  Both layouts orbit the metro core, so one core cell carries
+        # the traffic weighting.
+        if not metro:
+            return []
+        m = _resolve_metro(metro)
+        return [{
+            "ring_id": f"synth-{layout.upper()}",
+            "core_lat": m["lat"],
+            "core_lon": m["lon"],
+            "radius_km": traffic_radius_km,
+            "ops_weight": float(max(1, n_cluster)),
+            "illuminator": "",
+        }]
     if metro:
         ring_spec = _rings_in_metro(ring_spec, _resolve_metro(metro))
         n_clusters = min(n_clusters, len(ring_spec))
@@ -1312,6 +1336,12 @@ def generate_fleet(
     if regions is None:
         regions = ["us"]
 
+    # Reproducibility caveat: --seed fixes the RNG stream (it is re-seeded
+    # again after the network tower lookup below, so lookup retries cannot
+    # shift it), but the *content* of the Tower API response and the
+    # availability of shapely for the land check both feed placement
+    # decisions.  Same seed + same tower cache + same optional deps ⇒ same
+    # fleet; a flaky API or a machine without shapely will differ.
     random.seed(seed)
 
     metro_area = _resolve_metro(metro) if metro else None
@@ -1378,6 +1408,9 @@ def generate_fleet(
         except Exception as exc:
             import logging
             logging.warning("Tower API lookup failed, using hardcoded towers: %s", exc)
+    # Re-seed after the lookup: any RNG the HTTP/cache path consumed (or will
+    # consume differently on retry) must not shift the placement stream.
+    random.seed(seed)
 
     # Allocate solo and cluster node counts, carving both from metro allocation
     if solo_towers:
@@ -1389,7 +1422,14 @@ def generate_fleet(
         n_solo = 0
     # No rings survived the metro filter → give their budget back to metro nodes
     # instead of silently generating fewer nodes than asked for.
-    n_cluster = max(0, n_cluster) if n_clusters > 0 else 0
+    if layout in ("dual", "scatter"):
+        # These layouts replace the ring and take their budget straight from
+        # n_cluster.  Gating it on the ring table surviving the metro filter
+        # (n_clusters > 0) zeroed the whole layout for any metro without a
+        # _RING_TXS entry — the ring table is irrelevant to them.
+        n_cluster = max(0, n_cluster)
+    else:
+        n_cluster = max(0, n_cluster) if n_clusters > 0 else 0
     n_metro = max(0, n_nodes - n_solo - n_cluster)
 
     # Track how many times each API tower has been used (per metro) for
@@ -1518,6 +1558,11 @@ def generate_fleet(
                 max_range_km=round(max_range, 1),
                 region="us",
                 tx_callsign=callsign,
+                # Same bistatic bound the base/ring/dual paths declare — these
+                # were the last nodes gating as monostatic circles, and the
+                # one path specifically meant to exercise single-node ellipse
+                # arcs.  Same number, read correctly (see the base-node note).
+                max_bistatic_range_km=round(max_range, 1),
             )
             nodes.append(_node_dict(node))
 
@@ -1533,6 +1578,13 @@ def generate_fleet(
         # two different answers to the same problem.  A ring buys geometry by
         # surrounding the airspace with receivers that all overlap; a dual site
         # buys it at the receiver, from two illuminators sharing one antenna.
+        if not metro_area:
+            # Without a core to place sites around, the layout silently
+            # returned a fleet ~n_cluster nodes short of --nodes.
+            raise ValueError(
+                "--layout dual requires --metro: dual sites are placed "
+                "around a metro core"
+            )
         if metro_area:
             _dual_towers = [t for _r, t in available_towers] or _TOWERS_US
             if illuminator_band == "vhf":
@@ -1559,6 +1611,11 @@ def generate_fleet(
         # Like "dual", this replaces the ring rather than adding to it — the
         # point is a fleet nobody placed, and a designed ring alongside it
         # would carry the geometry the layout exists to do without.
+        if not metro_area:
+            raise ValueError(
+                "--layout scatter requires --metro: scatter sites are placed "
+                "around a metro core"
+            )
         if metro_area:
             ring_nodes.extend(_generate_scatter_sites(
                 n=max(0, n_cluster),
@@ -1592,6 +1649,10 @@ def generate_fleet(
 def fleet_summary(nodes: list[dict]) -> dict:
     """Compute a summary of the fleet configuration."""
     from collections import Counter
+    if not nodes:
+        # min()/max() below raise on an empty fleet — report it instead.
+        return {"total_nodes": 0, "regions": {}, "unique_towers": 0,
+                "towers_by_usage": {}, "lat_range": None, "lon_range": None}
     regions = Counter(n["region"] for n in nodes)
     towers = Counter(n["tx_callsign"] for n in nodes)
     return {
@@ -1666,7 +1727,7 @@ def main():
                            ring_aim=args.ring_aim,
                            metro=args.metro)
     cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters,
-                           metro=args.metro)
+                           metro=args.metro, layout=args.layout)
     summary = fleet_summary(nodes)
 
     config = {
