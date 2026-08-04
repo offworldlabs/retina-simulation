@@ -1022,6 +1022,141 @@ def _generate_coverage_ring(
     return nodes
 
 
+def _generate_scatter_sites(
+    n: int,
+    core_lat: float,
+    core_lon: float,
+    towers: list[tuple],
+    metro_radius_km: float,
+    prefix: str = "synth-SCAT",
+    beam_width_deg: float = 50.0,
+    max_bistatic_range_km: float = 60.0,
+    aim_sigma_deg: float = 25.0,
+    frac_off_core: float = 0.25,
+    clump_sigma_km: float = 7.0,
+) -> list[dict]:
+    """Generate n receivers scattered the way a real deployment actually lands.
+
+    The ring and dual layouts are *designs*: someone chose where every receiver
+    goes and what it points at, to buy geometry.  A community fleet is not
+    designed.  Receivers appear where operators live and point where operators
+    care, and the resulting geometry is whatever falls out.  This layout models
+    that, so the solver is measured against the fleet it will really get rather
+    than the one we would have built.
+
+    Four properties, each with a reason:
+
+    - **Clumped, not uniform.**  Sites concentrate around the metro core and
+      around the towns the metro's real broadcast towers serve (an FM/TV tower
+      is sited for population, so the tower list doubles as a population proxy).
+      Clumping matters because co-located receivers see near-parallel bistatic
+      range gradients — the high-GDOP case a ring is specifically built to avoid.
+    - **Own illuminator per site.**  Each picks a nearby strong tower rather than
+      sharing one, weighted toward short baselines the way an operator picks the
+      station that comes in best.  Diverse illuminators mean per-node Doppler no
+      longer sits inside one shared association gate.
+    - **Aimed by hand.**  Most point roughly at the core airspace with real
+      pointing error; a minority point somewhere else entirely.
+    - **Heterogeneous hardware.**  Beamwidth and bistatic reach vary per site.
+      60 km is what a good setup achieves, not what an average one does, so the
+      reach distribution is skewed below it with a tail reaching it.
+    """
+    if n <= 0 or not towers:
+        return []
+
+    R = 6371.0
+
+    # Population anchors: the core, weighted heavily, plus each real tower.
+    anchors = [(core_lat, core_lon)] * max(2, len(towers) // 2)
+    anchors += [(t[0], t[1]) for t in towers]
+
+    def _scatter_around(anchor_lat, anchor_lon):
+        d_north = random.gauss(0, clump_sigma_km)
+        d_east = random.gauss(0, clump_sigma_km)
+        lat = anchor_lat + math.degrees(d_north / R)
+        lon = anchor_lon + math.degrees(d_east / (R * math.cos(math.radians(anchor_lat))))
+        return lat, lon
+
+    nodes = []
+    for i in range(n):
+        node_id = f"{prefix}-{i + 1:04d}"
+
+        rx_lat = rx_lon = None
+        for _ in range(40):
+            a_lat, a_lon = random.choice(anchors)
+            cand_lat, cand_lon = _scatter_around(a_lat, a_lon)
+            # Stay inside the metro the rest of the fleet and the traffic model
+            # live in; a site outside it just never sees an aircraft.
+            if _haversine_km(cand_lat, cand_lon, core_lat, core_lon) > metro_radius_km:
+                continue
+            if _candidate_is_safe(cand_lat, cand_lon, node_id):
+                rx_lat, rx_lon = cand_lat, cand_lon
+                break
+        if rx_lat is None:
+            rx_lat, rx_lon = _place_rx_on_land(
+                core_lat, core_lon,
+                dist_min_km=2.0,
+                dist_max_km=max(5.0, metro_radius_km * 0.8),
+                display_node_id=node_id,
+            )
+
+        # Illuminator: prefer a short baseline, but not deterministically —
+        # 1/d² weighting reproduces "whichever strong station comes in best"
+        # without every site in a clump converging on the same tower.
+        weighted = []
+        for t in towers:
+            d = _haversine_km(rx_lat, rx_lon, t[0], t[1])
+            if d < 4.0 or d > 75.0:
+                continue
+            weighted.append((t, 1.0 / (d * d)))
+        if weighted:
+            total = sum(w for _t, w in weighted)
+            pick = random.uniform(0, total)
+            acc = 0.0
+            tower = weighted[-1][0]
+            for t, w in weighted:
+                acc += w
+                if acc >= pick:
+                    tower = t
+                    break
+        else:
+            tower = min(towers, key=lambda t: _haversine_km(rx_lat, rx_lon, t[0], t[1]))
+        tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
+
+        if random.random() < frac_off_core:
+            beam_azimuth = random.uniform(0.0, 360.0)
+        else:
+            beam_azimuth = (
+                _bearing_between(rx_lat, rx_lon, core_lat, core_lon)
+                + random.gauss(0, aim_sigma_deg)
+            ) % 360.0
+
+        width = min(75.0, max(25.0, random.gauss(beam_width_deg, 8.0)))
+        # Mode at 0.7 of the ceiling: most setups fall short of the best case.
+        reach = max_bistatic_range_km * random.triangular(0.40, 1.0, 0.70)
+
+        node = GeneratedNodeConfig(
+            node_id=node_id,
+            rx_lat=round(rx_lat, 6),
+            rx_lon=round(rx_lon, 6),
+            rx_alt_ft=round(random.uniform(100, 1500), 1),
+            tx_lat=tx_lat,
+            tx_lon=tx_lon,
+            tx_alt_ft=tx_alt_ft,
+            fc_hz=fc_hz,
+            fs_hz=2_000_000,
+            beam_width_deg=round(width, 1),
+            max_range_km=round(reach, 1),
+            region="us",
+            tx_callsign=callsign,
+            beam_azimuth_deg=round(beam_azimuth, 2),
+            max_bistatic_range_km=round(reach, 1),
+        )
+        nodes.append(_node_dict(node))
+
+    return nodes
+
+
 def _resolve_metro(metro: str) -> dict:
     """Resolve a metro code (e.g. "gvl") to its descriptor in _KNOWN_METROS."""
     key = metro.strip().lower()
@@ -1147,6 +1282,10 @@ def generate_fleet(
     metros, each a ring around the metro core aimed inward and sharing one low-band
     illuminator. Diverse look angles give low-GDOP, velocity-observable multinode
     fixes. Ring slots are carved out of the metro allocation so total stays n_nodes.
+
+    layout="dual" and layout="scatter" each spend that same n_cluster budget on a
+    different arrangement instead of the ring — see _generate_dual_sites and
+    _generate_scatter_sites.
 
     Args:
         n_nodes: Total nodes to generate (100-1000).
@@ -1416,6 +1555,22 @@ def generate_fleet(
                 aim=dual_aim,
             ))
         return nodes + ring_nodes
+    if layout == "scatter":
+        # Like "dual", this replaces the ring rather than adding to it — the
+        # point is a fleet nobody placed, and a designed ring alongside it
+        # would carry the geometry the layout exists to do without.
+        if metro_area:
+            ring_nodes.extend(_generate_scatter_sites(
+                n=max(0, n_cluster),
+                core_lat=metro_area["lat"],
+                core_lon=metro_area["lon"],
+                towers=[t for _r, t in available_towers] or _TOWERS_US,
+                metro_radius_km=metro_area["radius_nm"] * _NM_TO_KM,
+                prefix=f"synth-{metro.strip().upper()}-SCAT" if metro else "synth-SCAT",
+                beam_width_deg=ring_beam_width_deg,
+                max_bistatic_range_km=ring_max_range_km,
+            ))
+        return nodes + ring_nodes
     for ring_id, spec, size in _active_rings(n_cluster, n_clusters, ring_spec):
         tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon = spec
         ring_nodes.extend(_generate_coverage_ring(
@@ -1464,12 +1619,15 @@ def main():
                         help="Restrict the whole fleet to one metro area (drops solo/rural nodes)")
     parser.add_argument("--output", type=str, default="fleet_config.json", help="Output file path")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--layout", choices=("ring", "dual"), default="ring",
+    parser.add_argument("--layout", choices=("ring", "dual", "scatter"), default="ring",
                         help="ring: receivers circling a core, all aimed inward. "
                              "dual: receivers scattered across the metro, each "
                              "running two nodes on two illuminators from one "
                              "antenna (n-cluster is the node budget, so half "
-                             "that many sites).")
+                             "that many sites). "
+                             "scatter: an undesigned community fleet — sites "
+                             "clumped where people live, each on its own nearby "
+                             "illuminator, hand-aimed, heterogeneous hardware.")
     parser.add_argument("--illuminator-band", choices=("any", "vhf"), default="any",
                         help="restrict dual-site illuminators to VHF")
     parser.add_argument("--dual-min-eirp-dbm", type=float, default=40.0,
