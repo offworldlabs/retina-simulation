@@ -133,3 +133,78 @@ class TestDeterminism:
         _fb, sb = _scatter(seed=8)
         assert [(n["rx_lat"], n["rx_lon"]) for n in sa] != \
                [(n["rx_lat"], n["rx_lon"]) for n in sb]
+
+
+class TestLayoutFleetFaults:
+    """Stage-1 fixes: short/empty fleets and ring cells for ringless layouts."""
+
+    def test_scatter_without_metro_raises_instead_of_a_short_fleet(self):
+        import pytest
+        with pytest.raises(ValueError, match="requires --metro"):
+            generate_fleet(n_nodes=16, n_cluster=12, layout="scatter",
+                           use_tower_api=False, seed=42)
+
+    def test_dual_without_metro_raises_instead_of_a_short_fleet(self):
+        import pytest
+        with pytest.raises(ValueError, match="requires --metro"):
+            generate_fleet(n_nodes=16, n_cluster=12, layout="dual",
+                           use_tower_api=False, seed=42)
+
+    def test_scatter_budget_is_not_gated_on_the_ring_table(self):
+        """A metro with no _RING_TXS entry used to zero n_cluster for scatter,
+        which has no rings at all."""
+        fleet, scat = _scatter(n_clusters=0)
+        assert len(scat) == 12
+        assert len(fleet) == 16
+
+    def test_coverage_cells_do_not_describe_rings_for_ringless_layouts(self):
+        from retina_simulation.generator import coverage_cells
+        cells = coverage_cells(n_cluster=12, n_clusters=1, metro="gvl",
+                               layout="scatter")
+        assert len(cells) == 1
+        assert cells[0]["ring_id"] == "synth-SCATTER"
+        assert abs(cells[0]["core_lat"] - GVL["lat"]) < 1e-9
+        # And without a metro there is nothing to describe.
+        assert coverage_cells(n_cluster=12, layout="scatter") == []
+
+    def test_ring_layout_cells_are_unchanged(self):
+        from retina_simulation.generator import coverage_cells
+        ring = coverage_cells(n_cluster=12, n_clusters=1, metro="gvl",
+                              layout="ring")
+        default = coverage_cells(n_cluster=12, n_clusters=1, metro="gvl")
+        assert ring == default
+
+    def test_solo_nodes_declare_the_bistatic_limit(self):
+        fleet = generate_fleet(n_nodes=30, n_cluster=8, n_clusters=1,
+                               use_tower_api=False, seed=42)
+        solos = [n for n in fleet if "SOLO" in n["node_id"]]
+        assert solos, "expected solo nodes in a nationwide fleet"
+        for n in solos:
+            assert n.get("max_bistatic_range_km") == n["max_range_km"]
+
+    def test_empty_fleet_summary_does_not_crash(self):
+        from retina_simulation.generator import fleet_summary
+        s = fleet_summary([])
+        assert s["total_nodes"] == 0
+
+
+class TestVerticalRateDecays:
+    def test_vel_up_decays_toward_level_flight(self):
+        import random
+        from retina_simulation.world import SimulationWorld
+        random.seed(3)
+        w = SimulationWorld()
+        w.step(1.0)  # spawn traffic
+        tagged = list(w.aircraft)
+        assert tagged
+        for ac in tagged:
+            ac.vel_up = 0.003   # force the worst-case spawn climb rate
+            ac.alt_km = 8.0
+        for _ in range(600):    # 600 s of simulation
+            w.step(1.0)
+        survivors = [ac for ac in w.aircraft if ac in tagged]
+        assert survivors
+        # vel_up used to integrate forever; every aircraft saturated at the
+        # 15 km ceiling.  With the decay nobody is pinned there.
+        assert all(abs(ac.vel_up) < 0.001 for ac in survivors)
+        assert all(ac.alt_km < 15.0 for ac in survivors)

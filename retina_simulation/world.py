@@ -459,9 +459,12 @@ class SimulationWorld:
             baseline_bearing = _bearing_deg(anchor.rx_lat, anchor.rx_lon, anchor.tx_lat, anchor.tx_lon)
             perp_rad = math.radians((baseline_bearing + 90.0) % 360.0)
             dist_km = random.uniform(5.0, anchor.max_range_km * 0.7)
-            anchor_lat = anchor.rx_lat + (dist_km * math.cos(perp_rad)) / 111.32
-            cos_lat = math.cos(math.radians(anchor.rx_lat))
-            anchor_lon = anchor.rx_lon + (dist_km * math.sin(perp_rad)) / (111.32 * max(cos_lat, 1e-6))
+            # R_EARTH-derived like every other conversion in this file — these
+            # were the last 111.32 literals, 0.11% off the rest of the sim.
+            anchor_lat, anchor_lon, _ = _enu_to_lla(
+                dist_km * math.sin(perp_rad), dist_km * math.cos(perp_rad),
+                0.0, anchor.rx_lat, anchor.rx_lon, 0.0,
+            )
         else:
             anchor_lat, anchor_lon = self.center_lat, self.center_lon
 
@@ -625,8 +628,17 @@ class SimulationWorld:
         ac.lat += dlat
         ac.lon += dlon
         ac.alt_km += ac.vel_up * dt
+        # Level off: vel_up was set once at spawn and integrated forever, so
+        # every aircraft eventually saturated against the altitude clamps —
+        # the whole fleet ended up pinned to the floor or the ceiling.  Unlike
+        # vel_east/north (recomputed from heading each tick), there is no
+        # vertical navigation, so decay toward level flight with a ~5 min
+        # time constant and stop climbing at the clamp.
+        ac.vel_up *= math.exp(-dt / 300.0)
 
         # Clamp altitude
+        if ac.alt_km <= 0.1 or ac.alt_km >= 15.0:
+            ac.vel_up = 0.0
         ac.alt_km = max(0.1, min(ac.alt_km, 15.0))
 
         # ── Orbit anomaly: circle in place instead of following waypoints ────

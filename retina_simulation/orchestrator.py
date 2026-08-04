@@ -1042,7 +1042,12 @@ async def main_async(args):
             n_clusters=args.n_clusters,
             metro=getattr(args, "metro", None),
         )
-        cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters, metro=getattr(args, "metro", None))
+        cells = coverage_cells(
+            n_cluster=args.n_cluster,
+            n_clusters=args.n_clusters,
+            metro=getattr(args, "metro", None),
+            layout=getattr(args, "layout", "ring"),
+        )
 
     # When --metros is specified, filter nodes to only those near selected metros
     if getattr(args, "metros", "") and args.metros:
