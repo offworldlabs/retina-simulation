@@ -248,7 +248,14 @@ class SyntheticNodeGenerator:
         delay += random.gauss(0, 0.1)  # ~0.1 μs noise (GPS-disciplined SDR)
         doppler += random.gauss(0, 2.0)  # ~2 Hz noise
 
-        # SNR depends on distance (closer = stronger)
+        # SNR depends on distance (closer = stronger).
+        # KNOWN SIMPLIFICATION: this is a one-way 10 dB/decade falloff on the
+        # RX-relative distance.  Real bistatic received power goes as
+        # 1/(R_tx² · R_rx²) — ~40 dB/decade split across both legs — so
+        # synthetic SNR falls off far more gently than hardware will.  Any
+        # SNR-derived gate tuned on this model needs re-tuning on real
+        # captures; changing the model is a measured follow-up, not a
+        # drive-by (it reshapes every detection threshold downstream).
         dist = _norm(pos)
         base_snr = 25 - 10 * math.log10(max(dist, 1))
         snr = max(base_snr + random.gauss(0, 2), 4.0)
