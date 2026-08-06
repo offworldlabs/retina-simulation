@@ -329,9 +329,13 @@ class FleetOrchestrator:
                 tx_alt_ft=cfg["tx_alt_ft"],
                 fc_hz=cfg["fc_hz"],
                 fs_hz=cfg.get("fs_hz", 2_000_000),
-                beam_width_deg=self.beam_width_deg or cfg.get("beam_width_deg", 40),
+                beam_width_deg=self.beam_width_deg or cfg.get("beam_width_deg", 42),
                 max_range_km=self.max_range_km or cfg.get("max_range_km", 50),
                 beam_azimuth_deg=cfg.get("beam_azimuth_deg"),  # None → broadside in add_node
+                # Without this the world falls back to the monostatic RX-radius
+                # rule while the handshake tells the server the bistatic limit —
+                # nodes then "detect" 1.6x beyond what the server will accept.
+                max_bistatic_range_km=cfg.get("max_bistatic_range_km"),
             )
             self.world.add_node(node)
 

@@ -91,14 +91,15 @@ class TestUndesignedGeometry:
         assert max(errs) > 45.0          # somebody points well off-core
         assert sum(e < 45.0 for e in errs) >= len(errs) // 2   # most do not
 
-    def test_hardware_is_heterogeneous(self):
-        """One reach and one beamwidth across the fleet is a design decision.
-        60 km is what a good setup achieves, not an average one."""
+    def test_reach_varies_but_beamwidth_is_uniform(self):
+        """Reach varies per site (60 km is what a good setup achieves, not an
+        average one), but every antenna is the same 42-degree Yagi — width
+        jitter was removed deliberately."""
         _fleet, scat = _scatter()
         reaches = {n["max_bistatic_range_km"] for n in scat}
         widths = {n["beam_width_deg"] for n in scat}
         assert len(reaches) > 1
-        assert len(widths) > 1
+        assert widths == {42.0}
         assert max(n["max_bistatic_range_km"] for n in scat) <= 60.0
 
     def test_max_range_and_bistatic_limit_agree(self):

@@ -162,7 +162,7 @@ class NodeConfig:
     min_doppler: float = 15.0
     # Detection geometry
     beam_azimuth_deg: float | None = None  # None → auto broadside in add_node
-    beam_width_deg: float = 41.0  # Yagi half-power beamwidth (40-42° spec)
+    beam_width_deg: float = 42.0  # Yagi half-power beamwidth (fleet spec)
     max_range_km: float = 50.0  # maximum RX→target range (monostatic)
     # Maximum *bistatic* range: (RX→target) + (target→TX) − baseline, i.e. the
     # differential range the delay measurement actually represents, and what
@@ -462,8 +462,12 @@ class SimulationWorld:
             # R_EARTH-derived like every other conversion in this file — these
             # were the last 111.32 literals, 0.11% off the rest of the sim.
             anchor_lat, anchor_lon, _ = _enu_to_lla(
-                dist_km * math.sin(perp_rad), dist_km * math.cos(perp_rad),
-                0.0, anchor.rx_lat, anchor.rx_lon, 0.0,
+                dist_km * math.sin(perp_rad),
+                dist_km * math.cos(perp_rad),
+                0.0,
+                anchor.rx_lat,
+                anchor.rx_lon,
+                0.0,
             )
         else:
             anchor_lat, anchor_lon = self.center_lat, self.center_lon
