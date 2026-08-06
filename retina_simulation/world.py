@@ -555,14 +555,33 @@ class SimulationWorld:
             **self._maybe_schedule_anomaly(is_anomalous, object_type),
         )
 
+    # Expired aircraft are retired only once they are at least this far from
+    # the world center — a target vanishing overhead reads as a tracking bug
+    # on the map, so retirement happens off at the edges, beyond the ~60 km
+    # node coverage of a metro-scoped fleet.  (A nationwide fleet spawns most
+    # aircraft beyond this radius, which degrades to the old expire-anywhere
+    # behaviour — acceptable, nothing deployed runs unscoped.)
+    retire_edge_km: float = 70.0
+
+    def _should_retire(self, ac: "SimulatedAircraft") -> bool:
+        age = self._time - ac.created_at
+        if age < ac.lifetime_s:
+            return False
+        if age > ac.lifetime_s * 2:
+            # Hard cap so slow or looping routes (drones especially) still
+            # turn over even if they never reach the edge.
+            return True
+        return _haversine_km(self.center_lat, self.center_lon,
+                             ac.lat, ac.lon) > self.retire_edge_km
+
     def step(self, dt: float, mode: str = "detection"):
         """Advance simulation by dt seconds."""
         self._time += dt
 
-        # Remove expired aircraft
+        # Retire expired aircraft (edge-gated — see _should_retire)
         self.aircraft = [
             ac for ac in self.aircraft
-            if (self._time - ac.created_at) < ac.lifetime_s
+            if not self._should_retire(ac)
         ]
 
         # Spawn to maintain target count
