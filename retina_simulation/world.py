@@ -161,7 +161,7 @@ class NodeConfig:
     min_doppler: float = 15.0
     # Detection geometry
     beam_azimuth_deg: Optional[float] = None   # None → auto broadside in add_node
-    beam_width_deg: float = 41.0     # Yagi half-power beamwidth (40-42° spec)
+    beam_width_deg: float = 42.0     # Yagi half-power beamwidth (fleet spec)
     max_range_km: float = 50.0       # maximum RX→target range (monostatic)
     # Maximum *bistatic* range: (RX→target) + (target→TX) − baseline, i.e. the
     # differential range the delay measurement actually represents, and what

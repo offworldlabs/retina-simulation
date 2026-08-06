@@ -316,7 +316,7 @@ class GeneratedNodeConfig:
     tx_alt_ft: float
     fc_hz: float
     fs_hz: float = 2_000_000.0
-    beam_width_deg: float = 40.0
+    beam_width_deg: float = 42.0
     max_range_km: float = 50.0
     region: str = "us"
     tx_callsign: str = ""
@@ -766,7 +766,7 @@ def _generate_dual_sites(
     towers: list[tuple],
     metro_radius_km: float,
     prefix: str = "synth-GVL",
-    beam_width_deg: float = 41.0,
+    beam_width_deg: float = 42.0,
     max_bistatic_range_km: float = 60.0,
     min_eirp_dbm: float = 40.0,
     aim: str = "core",
@@ -862,7 +862,7 @@ def _generate_metro_solo(
     towers: list[tuple],
     metro_radius_km: float,
     prefix: str = "synth-SOLO",
-    beam_width_deg: float = 40.0,
+    beam_width_deg: float = 42.0,
     max_bistatic_range_km: float = 60.0,
     ring_radius_km: float = 18.0,
     start_bearing_deg: float = 30.0,
@@ -956,7 +956,7 @@ def _generate_coverage_ring(
     tx_tower: tuple,
     prefix: str = "synth-RING",
     radius_km: float = 18.0,
-    beam_width_deg: float = 50.0,
+    beam_width_deg: float = 42.0,
     max_range_km: float = 60.0,
     aim: str = "core",
     start_bearing_deg: float = 0.0,
@@ -1029,7 +1029,7 @@ def _generate_scatter_sites(
     towers: list[tuple],
     metro_radius_km: float,
     prefix: str = "synth-SCAT",
-    beam_width_deg: float = 50.0,
+    beam_width_deg: float = 42.0,
     max_bistatic_range_km: float = 60.0,
     aim_sigma_deg: float = 25.0,
     frac_off_core: float = 0.25,
@@ -1131,7 +1131,8 @@ def _generate_scatter_sites(
                 + random.gauss(0, aim_sigma_deg)
             ) % 360.0
 
-        width = min(75.0, max(25.0, random.gauss(beam_width_deg, 8.0)))
+        # All fleet antennas are identical 42-degree Yagis — no width jitter.
+        width = beam_width_deg
         # Mode at 0.7 of the ceiling: most setups fall short of the best case.
         # NOTE: `reach` is a DIFFERENTIAL range (Δ = R_tx + R_rx − L), and it
         # is assigned to both max_bistatic_range_km (its true meaning) and
@@ -1277,7 +1278,7 @@ def generate_fleet(
     n_cluster: int = 8,
     n_clusters: int = 1,
     ring_radius_km: float = 18.0,
-    ring_beam_width_deg: float = 50.0,
+    ring_beam_width_deg: float = 42.0,
     ring_max_range_km: float = 60.0,
     ring_aim: str = "core",
     ring_spec: list = _RING_TXS,
@@ -1469,7 +1470,7 @@ def generate_fleet(
         rx_alt_ft = random.uniform(100, 2000)
 
         node_fc = fc_hz + random.choice([-500000, 0, 0, 0, 500000])
-        beam_width = random.uniform(35, 45)
+        beam_width = 42.0  # identical 42-degree Yagis fleet-wide
         max_range = random.uniform(35, 55)
 
         node = GeneratedNodeConfig(
@@ -1541,7 +1542,7 @@ def generate_fleet(
             )
             rx_alt_ft = random.uniform(100, 1500)
 
-            beam_width = random.uniform(35, 45)
+            beam_width = 42.0  # identical 42-degree Yagis fleet-wide
             max_range = random.uniform(35, 55)
 
             node = GeneratedNodeConfig(
@@ -1706,7 +1707,7 @@ def main():
                              "the map). Capped at the number of rings that survive --metro.")
     parser.add_argument("--ring-radius-km", type=float, default=18.0,
                         help="Receiver ring radius around each metro core")
-    parser.add_argument("--ring-beam-width-deg", type=float, default=50.0,
+    parser.add_argument("--ring-beam-width-deg", type=float, default=42.0,
                         help="Yagi half-power beamwidth for ring receivers")
     parser.add_argument("--ring-max-range-km", type=float, default=60.0,
                         help="Detection range for ring receivers")
