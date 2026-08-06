@@ -668,6 +668,35 @@ class FleetOrchestrator:
         log.info("Ground truth saved: %s (%d snapshots)", path, len(self.ground_truth))
 
 
+def build_ground_truth_payload(aircraft_summaries: list[dict]) -> list[dict]:
+    """Remap world aircraft summaries to the server ground-truth push schema.
+
+    Dark objects have no ADS-B hex, so their stable object id doubles as the
+    ground-truth key; entries with neither are unidentifiable and dropped.
+    """
+    payload_aircraft = []
+    for ac in aircraft_summaries:
+        hex_code = ac.get("adsb_hex") or ac.get("id", "")
+        if not hex_code:
+            continue
+        payload_aircraft.append(
+            {
+                "hex": hex_code,
+                "lat": ac["lat"],
+                "lon": ac["lon"],
+                "alt_m": ac["alt_km"] * 1000,
+                "heading": ac.get("heading", 0),
+                "speed_ms": ac.get("speed_ms", 0),
+                "object_type": ac.get("object_type", "aircraft"),
+                "is_anomalous": ac.get("is_anomalous", False),
+                "has_adsb": ac.get("has_adsb", False),
+                "adsb_callsign": ac.get("adsb_callsign") or None,
+                "anomaly_event": ac.get("anomaly_event") or None,
+            }
+        )
+    return payload_aircraft
+
+
 async def _push_ground_truth_live(
     orchestrator: FleetOrchestrator,
     base_url: str,
@@ -695,24 +724,7 @@ async def _push_ground_truth_live(
 
         try:
             aircraft = orchestrator.world.get_aircraft_summary()
-            # Remap field names to what the server endpoint expects
-            payload_aircraft = []
-            for ac in aircraft:
-                hex_code = ac.get("adsb_hex") or ac.get("id", "")
-                if not hex_code:
-                    continue
-                payload_aircraft.append(
-                    {
-                        "hex": hex_code,
-                        "lat": ac["lat"],
-                        "lon": ac["lon"],
-                        "alt_m": ac["alt_km"] * 1000,
-                        "heading": ac.get("heading", 0),
-                        "speed_ms": ac.get("speed_ms", 0),
-                        "object_type": ac.get("object_type", "aircraft"),
-                        "is_anomalous": ac.get("is_anomalous", False),
-                    }
-                )
+            payload_aircraft = build_ground_truth_payload(aircraft)
 
             if payload_aircraft:
                 body = json.dumps(

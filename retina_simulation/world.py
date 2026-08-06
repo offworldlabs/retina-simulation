@@ -922,6 +922,8 @@ class SimulationWorld:
                 "is_anomalous": ac.is_anomalous,
                 "object_type": ac.object_type,
                 "adsb_hex": ac.adsb_hex,
+                "adsb_callsign": ac.adsb_callsign,
+                "anomaly_event": ac.anomaly_event,
             }
             for ac in self.aircraft
         ]
