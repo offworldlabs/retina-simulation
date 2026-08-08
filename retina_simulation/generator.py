@@ -1285,6 +1285,7 @@ def generate_fleet(
     illuminator_band: str = "any",
     dual_min_eirp_dbm: float = 40.0,
     dual_aim: str = "core",
+    dual_fraction: float = 0.0,
 ) -> list[dict]:
     """Generate a fleet of synthetic node configurations.
 
@@ -1328,6 +1329,12 @@ def generate_fleet(
             such as "gvl"). Towers and rings outside that metro's radius are
             dropped and solo/rural placement is disabled, so every node lands in
             the one metro. None (default) keeps the continent-wide behaviour.
+        dual_fraction: Fraction (0.0-1.0) of n_nodes to additionally run as
+            dual-illuminator sites (see _generate_dual_sites), carved out of
+            the ring/metro budget and appended after it. Requires metro
+            (ValueError otherwise, same as layout="dual"/"scatter"). Ignored
+            when layout == "dual" — the whole cluster budget is already dual
+            sites there.
 
     Returns:
         List of node config dicts ready for fleet_config.json.
@@ -1432,6 +1439,52 @@ def generate_fleet(
     else:
         n_cluster = max(0, n_cluster) if n_clusters > 0 else 0
     n_metro = max(0, n_nodes - n_solo - n_cluster)
+
+    # dual_fraction carve: a slice of the SAME layout's ring/metro budget
+    # additionally runs as dual-illuminator sites (see _generate_dual_sites),
+    # independent of layout="dual" (already all-dual there — the whole
+    # cluster budget went to dual sites, so dual_fraction is a no-op).
+    # Solo carve is untouched: solo answers a different question
+    # (single-node ellipse-arc coverage) than dual does.
+    n_dual_sites = 0
+    if dual_fraction > 0 and layout != "dual":
+        if not metro_area:
+            raise ValueError("dual_fraction > 0 requires --metro: dual sites are placed around a metro core")
+        n_dual_nodes = min(round(n_nodes * dual_fraction / 2) * 2, n_cluster + n_metro)
+        _from_cluster = min(n_dual_nodes, n_cluster)
+        n_cluster -= _from_cluster
+        n_metro -= n_dual_nodes - _from_cluster
+        n_dual_sites = n_dual_nodes // 2
+
+    def _dual_fraction_sites(n_sites: int) -> list[dict]:
+        """Extra dual-illuminator sites for the dual_fraction carve above.
+
+        Mirrors the layout="dual" branch's own _generate_dual_sites call
+        (same prefix/towers/aim construction) so a fraction-carved site is
+        indistinguishable from a full dual-layout one. Called last — after
+        every other node in this fleet has consumed its RNG draws — so
+        dual_fraction=0.0 (n_sites=0, no call) reproduces today's scene
+        byte-for-byte at the same seed.
+        """
+        if n_sites <= 0:
+            return []
+        _dual_towers = [t for _r, t in available_towers] or _TOWERS_US
+        if illuminator_band == "vhf":
+            _vhf = [t for t in _dual_towers if t[3] < 300e6]
+            if len(_vhf) >= 2:
+                _dual_towers = _vhf
+        return _generate_dual_sites(
+            n_sites=n_sites,
+            core_lat=metro_area["lat"],
+            core_lon=metro_area["lon"],
+            towers=_dual_towers,
+            metro_radius_km=metro_area["radius_nm"] * _NM_TO_KM,
+            prefix=f"synth-{metro.strip().upper()}-DUAL" if metro else "synth-DUAL",
+            beam_width_deg=ring_beam_width_deg,
+            max_bistatic_range_km=ring_max_range_km,
+            min_eirp_dbm=dual_min_eirp_dbm,
+            aim=dual_aim,
+        )
 
     # Track how many times each API tower has been used (per metro) for
     # round-robin distribution — avoids all nodes sharing one tower.
@@ -1626,7 +1679,7 @@ def generate_fleet(
                     max_bistatic_range_km=ring_max_range_km,
                 )
             )
-        return nodes + ring_nodes
+        return nodes + ring_nodes + _dual_fraction_sites(n_dual_sites)
     for ring_id, spec, size in _active_rings(n_cluster, n_clusters, ring_spec):
         tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon = spec
         ring_nodes.extend(
@@ -1644,7 +1697,10 @@ def generate_fleet(
         )
     nodes = ring_nodes + nodes  # prepend so ring IDs are first
 
-    return nodes
+    # Appended last: every other node above has already consumed its RNG
+    # draws, so dual_fraction=0.0 (n_dual_sites=0) leaves that stream
+    # untouched and reproduces today's scene byte-for-byte at the same seed.
+    return nodes + _dual_fraction_sites(n_dual_sites)
 
 
 def fleet_summary(nodes: list[dict]) -> dict:
@@ -1752,6 +1808,15 @@ def main():
         choices=["core", "broadside"],
         help="Aim ring beams at the metro core or broadside to TX",
     )
+    parser.add_argument(
+        "--dual-fraction",
+        type=float,
+        default=0.0,
+        help="Fraction (0.0-1.0) of --nodes to additionally run as "
+        "dual-illuminator sites, carved out of the ring/metro "
+        "budget and appended after it. Requires --metro. "
+        "Ignored for --layout dual (already all-dual).",
+    )
     args = parser.parse_args()
 
     regions = [r.strip().lower() for r in args.regions.split(",")]
@@ -1765,6 +1830,7 @@ def main():
         illuminator_band=args.illuminator_band,
         dual_min_eirp_dbm=args.dual_min_eirp_dbm,
         dual_aim=args.dual_aim,
+        dual_fraction=args.dual_fraction,
         ring_radius_km=args.ring_radius_km,
         ring_beam_width_deg=args.ring_beam_width_deg,
         ring_max_range_km=args.ring_max_range_km,
@@ -1778,6 +1844,15 @@ def main():
         "fleet": {
             "generated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
             "summary": summary,
+            # Stamps the scene actually generated so the orchestrator can
+            # detect a drift between this and a polled backend config and
+            # self-restart for regeneration (see orchestrator._poll_simulation_config).
+            "scene": {
+                "n_nodes": args.nodes,
+                "dual_fraction": args.dual_fraction,
+                "layout": args.layout,
+                "seed": args.seed,
+            },
         },
         "nodes": nodes,
         "cells": cells,

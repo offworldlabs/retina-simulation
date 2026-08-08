@@ -840,8 +840,19 @@ async def _poll_simulation_config(
     orchestrator: FleetOrchestrator,
     base_url: str,
     interval_s: float = 5.0,
+    scene: dict | None = None,
 ):
-    """Poll /api/simulation/config every interval_s and apply updated spawn fractions to world."""
+    """Poll /api/simulation/config every interval_s and apply updated spawn fractions to world.
+
+    Also watches for a scene change (n_nodes / dual_fraction): those are
+    baked into the fleet at container boot (see generator.py), so unlike the
+    spawn fractions above they cannot be applied in-process. When ``scene``
+    (this container's own stamped {n_nodes, dual_fraction, layout, seed}) is
+    present and differs from what the backend now reports, this logs a loud
+    WARN and calls ``orchestrator.stop()`` — every loop then exits, the
+    process exits 0, and `restart: unless-stopped` relaunches into
+    fleet-entrypoint.sh, which fetches the desired scene before regenerating.
+    """
     import urllib.request
 
     log.info("Simulation config polling started (url=%s, interval=%.1fs)", base_url, interval_s)
@@ -887,6 +898,34 @@ async def _poll_simulation_config(
                     orchestrator.world.min_aircraft,
                     orchestrator.world.max_aircraft,
                 )
+
+                # Scene-change detection. Absent scene stamp (stale volume,
+                # in-process generation) or absent config keys (never PUT) →
+                # no comparison, no restart.
+                if scene:
+                    scene_n_nodes = scene.get("n_nodes")
+                    scene_dual_fraction = scene.get("dual_fraction")
+                    scene_diff = False
+                    if "n_nodes" in cfg and scene_n_nodes is not None and int(cfg["n_nodes"]) != int(scene_n_nodes):
+                        scene_diff = True
+                    if (
+                        "dual_fraction" in cfg
+                        and scene_dual_fraction is not None
+                        and abs(float(cfg["dual_fraction"]) - float(scene_dual_fraction)) > 1e-6
+                    ):
+                        scene_diff = True
+                    if scene_diff:
+                        log.warning(
+                            "Scene change requested (n_nodes=%s dual_fraction=%s, "
+                            "running n_nodes=%s dual_fraction=%s) — shutting down "
+                            "for regeneration",
+                            cfg.get("n_nodes"),
+                            cfg.get("dual_fraction"),
+                            scene_n_nodes,
+                            scene_dual_fraction,
+                        )
+                        await orchestrator.stop()
+                        return
         except Exception as e:
             log.debug("Config poll failed: %s", e)
 
@@ -1039,6 +1078,15 @@ def _parse_metro_areas(metros_str: str) -> list[dict]:
 async def main_async(args):
     """Main async entry point."""
     # Load or generate fleet config
+    # Scene stamp (n_nodes/dual_fraction/layout/seed) the generator wrote into
+    # the config it produced — read here so _poll_simulation_config can detect
+    # a backend-requested scene change and self-restart for regeneration.
+    # Only ever populated via the loaded-config-file path: fleet-entrypoint.sh
+    # always runs the generator CLI (which stamps it) before starting us with
+    # --config. None here means "no comparison" — a stale volume with no
+    # stamp, or the in-process generation fallback below, never triggers a
+    # restart loop.
+    scene = None
     if args.config and os.path.exists(args.config):
         with open(args.config) as f:
             data = json.load(f)
@@ -1047,6 +1095,7 @@ async def main_async(args):
             # Fallback: maybe it's the old nodes_config.json format
             all_nodes = data.get("nodes", [])
         cells = data.get("cells", [])
+        scene = data.get("fleet", {}).get("scene")
     else:
         log.info("No config file, generating %d nodes...", args.nodes)
         regions = [r.strip() for r in args.regions.split(",")]
@@ -1175,6 +1224,7 @@ async def main_async(args):
                 orchestrator,
                 args.validation_url,
                 interval_s=5.0,
+                scene=scene,
             )
         )
 
