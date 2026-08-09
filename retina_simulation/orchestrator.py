@@ -857,10 +857,10 @@ async def _poll_simulation_config(
                 # Scene-change detection. Absent scene stamp (stale volume,
                 # in-process generation) or absent config keys (never PUT) →
                 # no comparison, no restart.
+                scene_n_nodes = scene.get("n_nodes") if scene else None
+                scene_dual_fraction = scene.get("dual_fraction") if scene else None
+                scene_diff = False
                 if scene:
-                    scene_n_nodes = scene.get("n_nodes")
-                    scene_dual_fraction = scene.get("dual_fraction")
-                    scene_diff = False
                     if (
                         "n_nodes" in cfg and scene_n_nodes is not None
                         and int(cfg["n_nodes"]) != int(scene_n_nodes)
@@ -871,16 +871,27 @@ async def _poll_simulation_config(
                         and abs(float(cfg["dual_fraction"]) - float(scene_dual_fraction)) > 1e-6
                     ):
                         scene_diff = True
-                    if scene_diff:
-                        log.warning(
-                            "Scene change requested (n_nodes=%s dual_fraction=%s, "
-                            "running n_nodes=%s dual_fraction=%s) — shutting down "
-                            "for regeneration",
-                            cfg.get("n_nodes"), cfg.get("dual_fraction"),
-                            scene_n_nodes, scene_dual_fraction,
-                        )
-                        await orchestrator.stop()
-                        return
+                # max_range_km needs no stamp: the orchestrator itself holds
+                # the running value, so this runs even when `scene` is None.
+                # Applying a range change requires regenerating node configs
+                # (every node's cfg is built from it at construction), which
+                # is exactly the restart path — the poll loop deliberately
+                # does NOT live-apply it.
+                if (
+                    "max_range_km" in cfg
+                    and abs(float(cfg["max_range_km"]) - float(orchestrator.max_range_km)) > 1e-6
+                ):
+                    scene_diff = True
+                if scene_diff:
+                    log.warning(
+                        "Scene change requested (n_nodes=%s dual_fraction=%s "
+                        "max_range_km=%s, running n_nodes=%s dual_fraction=%s "
+                        "max_range_km=%s) — shutting down for regeneration",
+                        cfg.get("n_nodes"), cfg.get("dual_fraction"), cfg.get("max_range_km"),
+                        scene_n_nodes, scene_dual_fraction, orchestrator.max_range_km,
+                    )
+                    await orchestrator.stop()
+                    return
         except Exception as e:
             log.debug("Config poll failed: %s", e)
 

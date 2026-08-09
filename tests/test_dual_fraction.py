@@ -129,10 +129,13 @@ class _StubWorld:
 
 
 class _StubOrchestrator:
-    def __init__(self):
+    def __init__(self, max_range_km=0.0):
         self._running = True
         self.world = _StubWorld()
         self.stop_calls = 0
+        # The orchestrator itself holds the running value — max_range_km
+        # needs no scene stamp, unlike n_nodes/dual_fraction below.
+        self.max_range_km = max_range_km
 
     async def stop(self):
         self.stop_calls += 1
@@ -219,4 +222,55 @@ class TestScenePollDetection:
         scene = {"n_nodes": 30, "dual_fraction": 0.0}
         cfg = {"_updated_at": 1.0}
         _run_one_poll(monkeypatch, orch, scene, cfg)
+        assert orch.stop_calls == 0
+
+
+class TestScenePollMaxRangeKm:
+    """max_range_km is a scene key too — applying it requires regenerating
+    every node's config, so it goes through the same restart path as
+    n_nodes/dual_fraction. Unlike those two it needs no scene stamp: the
+    orchestrator itself holds the running value, so the comparison runs even
+    when `scene` is None."""
+
+    def test_stop_called_on_max_range_km_diff(self, monkeypatch):
+        orch = _StubOrchestrator(max_range_km=0.0)
+        cfg = {"_updated_at": 1.0, "max_range_km": 150.0}
+        _run_one_poll(monkeypatch, orch, None, cfg)
+        assert orch.stop_calls == 1
+
+    def test_stop_called_on_max_range_km_diff_with_scene_present(self, monkeypatch):
+        # Runs independent of the scene stamp -- present-but-matching scene
+        # keys must not suppress the max_range_km comparison.
+        orch = _StubOrchestrator(max_range_km=0.0)
+        scene = {"n_nodes": 30, "dual_fraction": 0.0}
+        cfg = {"_updated_at": 1.0, "n_nodes": 30, "dual_fraction": 0.0, "max_range_km": 200.0}
+        _run_one_poll(monkeypatch, orch, scene, cfg)
+        assert orch.stop_calls == 1
+
+    def test_stop_not_called_when_max_range_km_matches(self, monkeypatch):
+        orch = _StubOrchestrator(max_range_km=100.0)
+        cfg = {"_updated_at": 1.0, "max_range_km": 100.0}
+        _run_one_poll(monkeypatch, orch, None, cfg)
+        assert orch.stop_calls == 0
+
+    def test_stop_not_called_within_float_tolerance(self, monkeypatch):
+        orch = _StubOrchestrator(max_range_km=100.0)
+        cfg = {"_updated_at": 1.0, "max_range_km": 100.0 + 1e-9}
+        _run_one_poll(monkeypatch, orch, None, cfg)
+        assert orch.stop_calls == 0
+
+    def test_stop_not_called_when_max_range_km_absent(self, monkeypatch):
+        # Never PUT (only-if-set pattern) -> absent key -> no comparison,
+        # even though the running value is nonzero.
+        orch = _StubOrchestrator(max_range_km=75.0)
+        cfg = {"_updated_at": 1.0}
+        _run_one_poll(monkeypatch, orch, None, cfg)
+        assert orch.stop_calls == 0
+
+    def test_works_with_scene_stamp_none_and_no_scene_diff(self, monkeypatch):
+        # scene=None must not itself raise or skip the max_range_km check --
+        # only n_nodes/dual_fraction are guarded by the stamp.
+        orch = _StubOrchestrator(max_range_km=50.0)
+        cfg = {"_updated_at": 1.0, "max_range_km": 50.0}
+        _run_one_poll(monkeypatch, orch, None, cfg)
         assert orch.stop_calls == 0
