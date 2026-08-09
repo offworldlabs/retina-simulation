@@ -133,6 +133,9 @@ class SimulatedAircraft:
     # Lifecycle
     created_at: float = 0.0
     lifetime_s: float = 600.0
+    # Expired and rerouted toward the region edge for retirement (see
+    # SimulationWorld._route_out); guards the reroute from re-firing.
+    departing: bool = False
     # Waypoint navigation
     waypoints: list = field(default_factory=list)
     waypoint_idx: int = 0
@@ -349,7 +352,14 @@ class SimulationWorld:
         # commercial aircraft anomalous at its own hardcoded rate. One switch,
         # so "anomalies off" means off — and raising it turns everything back on.
         self.frac_anomalous: float = 0.0
-        self.frac_drone: float = 0.10
+        # Drones off by default, matching the backend's simulation_config
+        # default (user call, 2026-08: fixed-wing scene only).  The old 0.10
+        # here spawned a handful of drones in the window between world
+        # construction and the first config poll on EVERY fleet restart —
+        # visible as "a few drones exist even with the slider at 0" until
+        # they aged out.  The orchestrator poll's absent-key fallback must
+        # stay matched to this value.
+        self.frac_drone: float = 0.0
         self.frac_dark: float = 0.15
         # remaining fraction = commercial aircraft with ADS-B
         # Hub-radial flight planning: when metro_cells is non-empty, this
@@ -581,20 +591,62 @@ class SimulationWorld:
     # aircraft beyond this radius, which degrades to the old expire-anywhere
     # behaviour — acceptable, nothing deployed runs unscoped.)
     retire_edge_km: float = 70.0
+    # Extra flight time an expired aircraft gets to actually REACH the edge.
+    # Metro-routed traffic (85% of spawns) circulates inside the metro and
+    # rarely crosses retire_edge_km on its own, so under the old 2x-lifetime
+    # hard cap most of it still vanished mid-view — the edge gate only ever
+    # covered planes that happened to be leaving anyway.  On expiry the
+    # aircraft is now rerouted outward (_route_out) and 70 km at the slowest
+    # commercial speed (~0.1 km/s) is ~700 s, so 900 s means the backstop
+    # below fires only for genuinely stuck aircraft.
+    exit_grace_s: float = 900.0
+
+    def _route_out(self, ac: "SimulatedAircraft") -> None:
+        """Point an expired aircraft at the region edge and let it fly out.
+
+        Replaces the remaining route with one waypoint past retire_edge_km on
+        the bearing away from the world center (current heading when the
+        aircraft sits at the center itself), so retirement is something the
+        viewer watches happen at the edge instead of a dot blinking out.
+        """
+        if _haversine_km(self.center_lat, self.center_lon, ac.lat, ac.lon) > 1.0:
+            brg = _bearing_deg(self.center_lat, self.center_lon, ac.lat, ac.lon)
+        else:
+            brg = ac.heading_deg
+        dist_km = self.retire_edge_km + 15.0
+        brg_rad = math.radians(brg)
+        wp_lat = self.center_lat + dist_km * math.cos(brg_rad) / 111.32
+        wp_lon = self.center_lon + dist_km * math.sin(brg_rad) / (
+            111.32 * math.cos(math.radians(self.center_lat)))
+        ac.waypoints = [(wp_lat, wp_lon)]
+        ac.waypoint_idx = 0
+        ac.departing = True
 
     def _should_retire(self, ac: "SimulatedAircraft") -> bool:
         age = self._time - ac.created_at
         if age < ac.lifetime_s:
             return False
-        if age > ac.lifetime_s * 2:
-            # Hard cap so slow or looping routes (drones especially) still
-            # turn over even if they never reach the edge.
+        if ac.object_type == "drone":
+            # Drones loop low and slow and are expected to churn; an amber
+            # X-frame vanishing reads as turnover, not a tracking bug.
+            if age > ac.lifetime_s * 2:
+                return True
+        elif age > ac.lifetime_s + self.exit_grace_s:
+            # Leak backstop only — a departing aircraft normally crosses the
+            # edge well inside the grace window.
             return True
         return _haversine_km(self.center_lat, self.center_lon, ac.lat, ac.lon) > self.retire_edge_km
 
     def step(self, dt: float, mode: str = "detection"):
         """Advance simulation by dt seconds."""
         self._time += dt
+
+        # Expired non-drones head for the edge before the retire filter sees
+        # them past the edge (see _route_out / _should_retire).
+        for ac in self.aircraft:
+            if (not ac.departing and ac.object_type != "drone"
+                    and self._time - ac.created_at >= ac.lifetime_s):
+                self._route_out(ac)
 
         # Retire expired aircraft (edge-gated — see _should_retire)
         self.aircraft = [ac for ac in self.aircraft if not self._should_retire(ac)]
