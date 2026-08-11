@@ -14,8 +14,7 @@ import logging
 import math
 import random
 import sys
-from dataclasses import dataclass, asdict
-from typing import Optional
+from dataclasses import asdict, dataclass
 
 # ── Broadcast tower databases by region ──────────────────────────────────────
 # Each tower: (lat, lon, alt_ft, freq_hz, callsign)
@@ -259,7 +258,7 @@ class GeneratedNodeConfig:
     max_range_km: float = 50.0
     region: str = "us"
     tx_callsign: str = ""
-    beam_azimuth_deg: Optional[float] = None   # explicit Yagi aim; None → broadside
+    beam_azimuth_deg: float | None = None   # explicit Yagi aim; None → broadside
 
 
 def _node_dict(node: GeneratedNodeConfig) -> dict:
@@ -508,8 +507,9 @@ def _get_land_check():
 
     try:
         from pathlib import Path
-        from shapely.geometry import shape, Point
+
         from shapely import STRtree
+        from shapely.geometry import Point, shape
     except ImportError:
         logging.getLogger(__name__).warning(
             "shapely not installed; receiver water-rejection falls back to "
@@ -742,7 +742,7 @@ def coverage_cells(
 
 def generate_fleet(
     n_nodes: int = 200,
-    regions: Optional[list[str]] = None,
+    regions: list[str] | None = None,
     seed: int = 42,
     solo_fraction: float = 0.10,
     use_tower_api: bool = True,

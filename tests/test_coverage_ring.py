@@ -11,9 +11,11 @@ import pytest
 
 from retina_simulation import generator
 from retina_simulation.generator import (
-    _generate_coverage_ring, _bearing_between, _RING_TXS,
+    _RING_TXS,
+    _bearing_between,
+    _generate_coverage_ring,
 )
-from retina_simulation.world import SimulationWorld, NodeConfig, SimulatedAircraft
+from retina_simulation.world import NodeConfig, SimulatedAircraft, SimulationWorld
 
 pytest.importorskip("shapely")
 

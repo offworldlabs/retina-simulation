@@ -11,7 +11,10 @@ from collections import Counter
 import pytest
 
 from retina_simulation.generator import (
-    coverage_cells, generate_fleet, _active_rings, _RING_TXS,
+    _RING_TXS,
+    _active_rings,
+    coverage_cells,
+    generate_fleet,
 )
 
 pytest.importorskip("shapely")

@@ -41,9 +41,8 @@ import socket
 import sys
 import threading
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Optional
 
 # Speed of light km/μs
 C_KM_US = 0.299792458
@@ -91,8 +90,8 @@ class SyntheticTarget:
     vel_up: float
     # Properties
     is_anomalous: bool = False
-    adsb_hex: Optional[str] = None
-    adsb_callsign: Optional[str] = None
+    adsb_hex: str | None = None
+    adsb_callsign: str | None = None
     # Track lifetime
     created_at: float = 0.0
     lifetime_s: float = 300.0
@@ -260,7 +259,7 @@ class SyntheticNodeGenerator:
             "_target": target,  # internal, stripped before output
         }
 
-    def _make_adsb_entry(self, target: SyntheticTarget) -> Optional[dict]:
+    def _make_adsb_entry(self, target: SyntheticTarget) -> dict | None:
         """Generate ADS-B data for a target (if it has ADS-B and mode allows)."""
         if target.adsb_hex is None:
             return None
@@ -358,7 +357,7 @@ class SyntheticNodeGenerator:
 # ── TCP connection helpers ────────────────────────────────────────────────────
 
 def _connect_tcp(host: str, port: int, max_retries: int = 0,
-                 cloudflare_host: Optional[str] = None) -> socket.socket:
+                 cloudflare_host: str | None = None) -> socket.socket:
     """Connect to the tracker server via TCP with retry logic.
 
     If cloudflare_host is provided, the connection is made to the Cloudflare
@@ -379,7 +378,7 @@ def _connect_tcp(host: str, port: int, max_retries: int = 0,
                 label += f" (via Cloudflare → {host})"
             print(f"Connected to {label}", file=sys.stderr)
             return sock
-        except (ConnectionRefusedError, socket.timeout, OSError) as exc:
+        except (TimeoutError, ConnectionRefusedError, OSError) as exc:
             attempt += 1
             if 0 < max_retries <= attempt:
                 raise
@@ -397,7 +396,7 @@ def _send_msg(sock: socket.socket, msg: dict):
     sock.sendall((json.dumps(msg) + "\n").encode("utf-8"))
 
 
-def _recv_msg(sock: socket.socket, timeout: float = CONFIG_ACK_TIMEOUT_S) -> Optional[dict]:
+def _recv_msg(sock: socket.socket, timeout: float = CONFIG_ACK_TIMEOUT_S) -> dict | None:
     """Receive a single newline-delimited JSON message with timeout."""
     sock.settimeout(timeout)
     buf = b""
@@ -410,7 +409,7 @@ def _recv_msg(sock: socket.socket, timeout: float = CONFIG_ACK_TIMEOUT_S) -> Opt
         line = buf.split(b"\n", 1)[0]
         sock.settimeout(None)
         return json.loads(line)
-    except (socket.timeout, json.JSONDecodeError):
+    except (TimeoutError, json.JSONDecodeError):
         sock.settimeout(None)
         return None
 
@@ -551,7 +550,7 @@ def _listener_loop(sock: socket.socket, config: NodeConfig, stop_event: threadin
                         })
                     except (BrokenPipeError, ConnectionResetError, OSError):
                         break
-        except socket.timeout:
+        except TimeoutError:
             continue
         except (ConnectionResetError, OSError):
             break
@@ -560,16 +559,16 @@ def _listener_loop(sock: socket.socket, config: NodeConfig, stop_event: threadin
 # ── Streaming modes ───────────────────────────────────────────────────────────
 
 def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
-                interval_ms: int = 500, cloudflare_host: Optional[str] = None):
+                interval_ms: int = 500, cloudflare_host: str | None = None):
     """Stream detection frames to the tracker server over TCP with full protocol.
 
     Includes chain of custody: signing, hash chain, TSA timestamping.
     """
     from retina_custody.crypto_backend import SoftwareCryptoBackend
-    from retina_custody.packet_signer import PacketSigner
     from retina_custody.hash_chain import HashChainBuilder
-    from retina_custody.tsa_client import TimestampManager
     from retina_custody.iq_buffer import IQCircularBuffer
+    from retina_custody.packet_signer import PacketSigner
+    from retina_custody.tsa_client import TimestampManager
 
     config = generator.config
 
@@ -728,9 +727,9 @@ def _stream_http(generator: SyntheticNodeGenerator, url: str,
 
 
 def _replay_file(filepath: str, host: str, port: int, config: NodeConfig,
-                 speed: float = 1.0, cloudflare_host: Optional[str] = None):
+                 speed: float = 1.0, cloudflare_host: str | None = None):
     """Replay a .detection file over TCP with full protocol."""
-    with open(filepath, "r") as f:
+    with open(filepath) as f:
         content = f.read().strip()
         if not content.startswith("["):
             content = "[" + content + "]"
@@ -800,7 +799,7 @@ def _replay_file(filepath: str, host: str, port: int, config: NodeConfig,
 
 def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
                            mode: str = "detection", interval_ms: int = 500,
-                           cloudflare_host: Optional[str] = None):
+                           cloudflare_host: str | None = None):
     """Run multiple synthetic nodes from a shared simulation world.
 
     Each node gets its own TCP connection, protocol handshake, and
@@ -810,10 +809,12 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
     Args:
         nodes_config_path: Path to JSON file with list of node configs.
     """
-    from retina_simulation.world import SimulationWorld, NodeConfig as WorldNodeConfig
     from retina_custody.crypto_backend import SoftwareCryptoBackend
-    from retina_custody.packet_signer import PacketSigner
     from retina_custody.hash_chain import HashChainBuilder
+    from retina_custody.packet_signer import PacketSigner
+
+    from retina_simulation.world import NodeConfig as WorldNodeConfig
+    from retina_simulation.world import SimulationWorld
 
     # Load node configs
     with open(nodes_config_path) as f:
@@ -988,7 +989,7 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
     finally:
         stop_event.set()
         # Close any pending chain entries
-        for nid, chain_builder in node_chains.items():
+        for chain_builder in node_chains.values():
             if chain_builder._detection_hashes:
                 try:
                     chain_builder.close_hour()

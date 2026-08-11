@@ -7,7 +7,7 @@ carry an explicit float aim.
 
 import pytest
 
-from retina_simulation.generator import generate_fleet, GeneratedNodeConfig, _node_dict
+from retina_simulation.generator import GeneratedNodeConfig, _node_dict, generate_fleet
 
 pytest.importorskip("shapely")
 

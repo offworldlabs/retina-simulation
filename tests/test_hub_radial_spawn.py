@@ -9,7 +9,10 @@ import random
 from collections import Counter
 
 from retina_simulation.world import (
-    SimulationWorld, NodeConfig, MetroCell, _haversine_km,
+    MetroCell,
+    NodeConfig,
+    SimulationWorld,
+    _haversine_km,
 )
 
 _CORE_LAT, _CORE_LON = 32.8968, -97.0380

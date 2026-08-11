@@ -24,8 +24,7 @@ import hashlib
 import json
 import math
 import random
-from dataclasses import dataclass, field, asdict
-from typing import Optional
+from dataclasses import asdict, dataclass, field
 
 C_KM_US = 0.299792458  # speed of light km/μs
 C_KM_S = 299792.458    # speed of light km/s
@@ -94,8 +93,8 @@ class SimulatedAircraft:
     has_adsb: bool = False
     is_anomalous: bool = False
     object_type: str = "aircraft"  # "aircraft", "drone", "anomalous"
-    adsb_hex: Optional[str] = None
-    adsb_callsign: Optional[str] = None
+    adsb_hex: str | None = None
+    adsb_callsign: str | None = None
     # Lifecycle
     created_at: float = 0.0
     lifetime_s: float = 600.0
@@ -103,7 +102,7 @@ class SimulatedAircraft:
     waypoints: list = field(default_factory=list)
     waypoint_idx: int = 0
     # Mid-flight anomaly injection (scheduled event)
-    anomaly_event: Optional[str] = None   # None | "hijack" | "spoof" | "orbit" | "altitude_jump" | "id_swap"
+    anomaly_event: str | None = None   # None | "hijack" | "spoof" | "orbit" | "altitude_jump" | "id_swap"
     anomaly_trigger_at: float = 0.0       # world time when event fires
     anomaly_fired: bool = False           # True once the event has been applied
     _pre_spoof_lat: float = 0.0          # real position before GPS spoof
@@ -126,7 +125,7 @@ class NodeConfig:
     doppler_max: float = 300.0
     min_doppler: float = 15.0
     # Detection geometry
-    beam_azimuth_deg: Optional[float] = None   # None → auto broadside in add_node
+    beam_azimuth_deg: float | None = None   # None → auto broadside in add_node
     beam_width_deg: float = 41.0     # Yagi half-power beamwidth (40-42° spec)
     max_range_km: float = 50.0       # maximum detection range
 
@@ -623,10 +622,7 @@ class SimulationWorld:
 
         bearing = _bearing_deg(node.rx_lat, node.rx_lon, ac.lat, ac.lon)
         angle_diff = abs((bearing - node.beam_azimuth_deg + 180) % 360 - 180)
-        if angle_diff > node.beam_width_deg / 2:
-            return False
-
-        return True
+        return angle_diff <= node.beam_width_deg / 2
 
     def generate_detections_for_node(self, node_id: str, timestamp_ms: int) -> dict:
         """Generate a detection frame for a specific node.
@@ -789,7 +785,7 @@ class SimulationWorld:
         frames_per_step = max(len(self.nodes), 1)
         n_steps = max(1, n_frames // frames_per_step)
 
-        for step_i in range(n_steps):
+        for _step_i in range(n_steps):
             self.step(dt, mode=mode)
             timestamp_ms = int((self._time) * 1000)
 
