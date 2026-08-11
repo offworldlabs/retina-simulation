@@ -8,7 +8,10 @@ resolved.
 import math
 
 from retina_simulation.world import (
-    SimulationWorld, NodeConfig, SimulatedAircraft, _bearing_deg,
+    NodeConfig,
+    SimulatedAircraft,
+    SimulationWorld,
+    _bearing_deg,
 )
 
 _RX_LAT, _RX_LON = 33.939182, -84.651910

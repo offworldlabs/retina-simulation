@@ -7,8 +7,8 @@ re-derivation), and absent optional keys fall back to MetroCell defaults.
 
 import pytest
 
+from retina_simulation.generator import _RING_TXS, coverage_cells
 from retina_simulation.orchestrator import _cells_to_metrocells
-from retina_simulation.generator import coverage_cells, _RING_TXS
 from retina_simulation.world import MetroCell
 
 pytest.importorskip("shapely")

@@ -31,13 +31,12 @@ import signal
 import ssl
 import time
 from datetime import datetime, timezone
-from typing import Optional
+
+from retina_simulation.generator import coverage_cells, fleet_summary, generate_fleet
+from retina_simulation.tower_resolver import apply_tower_assignments, resolve_towers
 
 # Add parent dir so we can import simulation packages
-
-from retina_simulation.world import SimulationWorld, NodeConfig, MetroCell
-from retina_simulation.generator import generate_fleet, fleet_summary, coverage_cells
-from retina_simulation.tower_resolver import resolve_towers, apply_tower_assignments
+from retina_simulation.world import MetroCell, NodeConfig, SimulationWorld
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,8 +85,8 @@ class NodeConnection:
         self.node_id = node_cfg["node_id"]
         self.host = host
         self.port = port
-        self.reader: Optional[asyncio.StreamReader] = None
-        self.writer: Optional[asyncio.StreamWriter] = None
+        self.reader: asyncio.StreamReader | None = None
+        self.writer: asyncio.StreamWriter | None = None
         self.connected = False
         self.handshake_ok = False
         self.frames_sent = 0
@@ -118,7 +117,7 @@ class NodeConnection:
         self.writer.write(data)
         await self.writer.drain()
 
-    async def _recv(self, timeout: float = CONFIG_ACK_TIMEOUT_S) -> Optional[dict]:
+    async def _recv(self, timeout: float = CONFIG_ACK_TIMEOUT_S) -> dict | None:
         """Receive a single newline-delimited JSON message."""
         if not self.reader:
             return None
@@ -224,7 +223,7 @@ class FleetOrchestrator:
         max_range_km: float = 0.0,
         hub_radial: bool = True,
         metro_traffic_frac: float = 0.6,
-        cells: Optional[list[dict]] = None,
+        cells: list[dict] | None = None,
     ):
         self.node_configs = node_configs
         self.cells = cells or []
@@ -242,7 +241,7 @@ class FleetOrchestrator:
         self.hub_radial = hub_radial
         self.metro_traffic_frac = min(1.0, max(0.0, metro_traffic_frac))
         self.connections: dict[str, NodeConnection] = {}
-        self.world: Optional[SimulationWorld] = None
+        self.world: SimulationWorld | None = None
         self._running = False
         self._stats = {
             "total_frames": 0,
@@ -632,7 +631,7 @@ async def _push_ground_truth_live(
     loop = asyncio.get_event_loop()
     ssl_context = None
     if "localhost" in base_url or "127.0.0.1" in base_url:
-        ssl_context = ssl._create_unverified_context()
+        ssl_context = ssl._create_unverified_context()  # noqa: S323 — unverified context only for the localhost/127.0.0.1 dev path above
 
     while orchestrator._running:
         await asyncio.sleep(interval_s)
@@ -712,7 +711,7 @@ async def _push_real_adsb(
     loop = asyncio.get_event_loop()
     ssl_context = None
     if "localhost" in base_url or "127.0.0.1" in base_url:
-        ssl_context = ssl._create_unverified_context()
+        ssl_context = ssl._create_unverified_context()  # noqa: S323 — unverified context only for the localhost/127.0.0.1 dev path above
 
     log.info("Real ADS-B feed started (%d areas, interval=%.0fs)", len(areas), interval_s)
 
@@ -771,7 +770,7 @@ async def _poll_simulation_config(
     log.info("Simulation config polling started (url=%s, interval=%.1fs)", base_url, interval_s)
     url = f"{base_url}/api/simulation/config"
     loop = asyncio.get_event_loop()
-    ssl_context = ssl._create_unverified_context() if (
+    ssl_context = ssl._create_unverified_context() if (  # noqa: S323 — localhost dev path only
         "localhost" in base_url or "127.0.0.1" in base_url
     ) else None
     last_updated_at = 0.0
@@ -832,7 +831,7 @@ async def _push_adsb_live(
     ssl_context = None
     if "localhost" in base_url or "127.0.0.1" in base_url:
         import ssl as _ssl
-        ssl_context = _ssl._create_unverified_context()
+        ssl_context = _ssl._create_unverified_context()  # noqa: S323 — unverified context only for the localhost/127.0.0.1 dev path above
 
     while orchestrator._running:
         await asyncio.sleep(interval_s)
@@ -895,7 +894,7 @@ async def _validate_against_server(
     loop = asyncio.get_event_loop()
     ssl_context = None
     if "localhost" in base_url or "127.0.0.1" in base_url:
-        ssl_context = ssl._create_unverified_context()
+        ssl_context = ssl._create_unverified_context()  # noqa: S323 — unverified context only for the localhost/127.0.0.1 dev path above
 
     def _get_json(endpoint_url):
         with urllib.request.urlopen(endpoint_url, timeout=10, context=ssl_context) as r:

@@ -73,7 +73,7 @@ _TOWER_API_URL = os.getenv("TOWER_API_URL", "https://towers.retina.fm/api/towers
 def _load_cache() -> dict:
     if os.path.exists(_CACHE_PATH):
         try:
-            with open(_CACHE_PATH, "r") as f:
+            with open(_CACHE_PATH) as f:
                 return json.load(f)
         except Exception:
             log.warning("Could not load tower assignments cache; starting fresh.")
@@ -92,7 +92,7 @@ def _save_cache(cache: dict) -> None:
 def _load_metro_cache() -> dict:
     if os.path.exists(_METRO_CACHE_PATH):
         try:
-            with open(_METRO_CACHE_PATH, "r") as f:
+            with open(_METRO_CACHE_PATH) as f:
                 return json.load(f)
         except Exception:
             log.warning("Could not load metro tower cache; starting fresh.")
