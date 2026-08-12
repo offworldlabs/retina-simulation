@@ -63,7 +63,7 @@ log = logging.getLogger(__name__)
 _CACHE_PATH = os.path.join(os.path.dirname(__file__), "tower_assignments.json")
 _METRO_CACHE_PATH = os.path.join(os.path.dirname(__file__), "metro_tower_cache.json")
 _LOOKUP_RADIUS_KM = 80
-_MIN_FREQ_HZ = 80_000_000   # ignore sub-80 MHz (below FM band — not useful for PR)
+_MIN_FREQ_HZ = 80_000_000  # ignore sub-80 MHz (below FM band — not useful for PR)
 _MAX_FREQ_HZ = 900_000_000  # ignore > 900 MHz (above UHF TV)
 
 # ── Tower API base URL ────────────────────────────────────────────────────────
@@ -88,6 +88,7 @@ def _save_cache(cache: dict) -> None:
 
 
 # ── Metro tower cache (per-area multi-tower results from Tower API) ───────────
+
 
 def _load_metro_cache() -> dict:
     if os.path.exists(_METRO_CACHE_PATH):
@@ -138,13 +139,15 @@ def _query_tower_api(lat: float, lon: float, radius_km: int = 80, limit: int = 5
             if tx_lat is None or tx_lon is None:
                 continue
             alt_m = t.get("altitude_m") or t.get("elevation_m")
-            results.append({
-                "tx_lat": round(float(tx_lat), 6),
-                "tx_lon": round(float(tx_lon), 6),
-                "tx_alt_ft": _m_to_ft(alt_m),
-                "fc_hz": freq_hz,
-                "tx_callsign": (t.get("callsign") or "").strip(),
-            })
+            results.append(
+                {
+                    "tx_lat": round(float(tx_lat), 6),
+                    "tx_lon": round(float(tx_lon), 6),
+                    "tx_alt_ft": _m_to_ft(alt_m),
+                    "fc_hz": freq_hz,
+                    "tx_callsign": (t.get("callsign") or "").strip(),
+                }
+            )
         return results
     except Exception as exc:
         log.warning("Tower API query failed for (%.4f, %.4f): %s", lat, lon, exc)
@@ -267,9 +270,7 @@ async def _resolve_batch(nodes: list[dict], cache: dict, concurrency: int = 8) -
             if result:
                 cache[node["node_id"]] = result
                 updated += 1
-                log.debug("  %s → %s @ %.1f MHz",
-                          node["node_id"], result["tx_callsign"],
-                          result["fc_hz"] / 1e6)
+                log.debug("  %s → %s @ %.1f MHz", node["node_id"], result["tx_callsign"], result["fc_hz"] / 1e6)
             else:
                 # No real tower found — leave the generated default in place
                 log.debug("  %s — no real tower found, keeping generated TX", node["node_id"])
@@ -316,10 +317,9 @@ def resolve_towers(fleet_nodes: list[dict], cache_path: str = _CACHE_PATH) -> di
             # Inside an existing async context — use run_until_complete can't work here;
             # create a new thread-loop pair
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(
-                    lambda: asyncio.run(_resolve_batch(fleet_nodes, cache))
-                )
+                future = pool.submit(lambda: asyncio.run(_resolve_batch(fleet_nodes, cache)))
                 cache = future.result(timeout=300)
         else:
             cache = loop.run_until_complete(_resolve_batch(fleet_nodes, cache))

@@ -22,45 +22,45 @@ from dataclasses import asdict, dataclass
 
 _TOWERS_US = [
     # East Coast
-    (33.75667, -84.33184, 1600, 195_000_000, "WSB-TV"),    # Atlanta
-    (35.23064, -80.84313, 1540, 575_000_000, "WBTV"),       # Charlotte
-    (38.93460, -77.07920, 1380, 585_000_000, "WRC-TV"),     # Washington DC
-    (40.74843, -73.98566, 1776, 191_000_000, "WCBS-TV"),    # New York
-    (42.35370, -71.06010, 1200, 575_000_000, "WBZ-TV"),     # Boston
-    (39.95233, -75.16379, 1600, 563_000_000, "KYW-TV"),     # Philadelphia
-    (25.79590, -80.28700, 1000, 191_000_000, "WTVJ"),       # Miami
-    (28.54082, -81.37916, 1350, 551_000_000, "WESH"),       # Orlando
-    (27.97450, -82.45720, 1400, 539_000_000, "WFLA"),       # Tampa
-    (30.33270, -81.65560, 1200, 575_000_000, "WJXT"),       # Jacksonville
-    (36.85260, -75.97820, 1300, 539_000_000, "WAVY"),       # Norfolk
-    (35.78700, -78.78170, 1500, 563_000_000, "WRAL"),       # Raleigh
+    (33.75667, -84.33184, 1600, 195_000_000, "WSB-TV"),  # Atlanta
+    (35.23064, -80.84313, 1540, 575_000_000, "WBTV"),  # Charlotte
+    (38.93460, -77.07920, 1380, 585_000_000, "WRC-TV"),  # Washington DC
+    (40.74843, -73.98566, 1776, 191_000_000, "WCBS-TV"),  # New York
+    (42.35370, -71.06010, 1200, 575_000_000, "WBZ-TV"),  # Boston
+    (39.95233, -75.16379, 1600, 563_000_000, "KYW-TV"),  # Philadelphia
+    (25.79590, -80.28700, 1000, 191_000_000, "WTVJ"),  # Miami
+    (28.54082, -81.37916, 1350, 551_000_000, "WESH"),  # Orlando
+    (27.97450, -82.45720, 1400, 539_000_000, "WFLA"),  # Tampa
+    (30.33270, -81.65560, 1200, 575_000_000, "WJXT"),  # Jacksonville
+    (36.85260, -75.97820, 1300, 539_000_000, "WAVY"),  # Norfolk
+    (35.78700, -78.78170, 1500, 563_000_000, "WRAL"),  # Raleigh
     # Midwest
-    (41.87150, -87.62440, 1650, 191_000_000, "WBBM-TV"),   # Chicago
-    (42.33140, -83.04580, 1200, 551_000_000, "WXYZ-TV"),   # Detroit
-    (39.96110, -82.99880, 1400, 563_000_000, "WCMH"),      # Columbus
-    (39.76910, -86.15800, 1350, 575_000_000, "WISH-TV"),   # Indianapolis
-    (44.97750, -93.26490, 1500, 585_000_000, "WCCO-TV"),   # Minneapolis
-    (38.62720, -90.19780, 1300, 551_000_000, "KMOV"),       # St Louis
-    (39.09970, -94.57860, 1450, 539_000_000, "KCTV"),       # Kansas City
-    (41.25220, -95.99780, 1350, 575_000_000, "KETV"),       # Omaha
+    (41.87150, -87.62440, 1650, 191_000_000, "WBBM-TV"),  # Chicago
+    (42.33140, -83.04580, 1200, 551_000_000, "WXYZ-TV"),  # Detroit
+    (39.96110, -82.99880, 1400, 563_000_000, "WCMH"),  # Columbus
+    (39.76910, -86.15800, 1350, 575_000_000, "WISH-TV"),  # Indianapolis
+    (44.97750, -93.26490, 1500, 585_000_000, "WCCO-TV"),  # Minneapolis
+    (38.62720, -90.19780, 1300, 551_000_000, "KMOV"),  # St Louis
+    (39.09970, -94.57860, 1450, 539_000_000, "KCTV"),  # Kansas City
+    (41.25220, -95.99780, 1350, 575_000_000, "KETV"),  # Omaha
     # South
-    (29.76330, -95.36320, 1300, 191_000_000, "KHOU"),       # Houston
-    (32.78060, -96.80060, 1600, 575_000_000, "WFAA"),       # Dallas
-    (29.42410, -98.49360, 1200, 563_000_000, "KENS"),       # San Antonio
-    (30.26710, -97.74310, 1400, 551_000_000, "KVUE"),       # Austin
-    (36.16270, -86.78160, 1350, 539_000_000, "WSMV"),       # Nashville
-    (35.14950, -90.04890, 1200, 575_000_000, "WMC-TV"),    # Memphis
-    (32.29560, -90.18480, 1100, 563_000_000, "WLBT"),      # Jackson MS
-    (30.45080, -91.18720, 1150, 551_000_000, "WAFB"),      # Baton Rouge
+    (29.76330, -95.36320, 1300, 191_000_000, "KHOU"),  # Houston
+    (32.78060, -96.80060, 1600, 575_000_000, "WFAA"),  # Dallas
+    (29.42410, -98.49360, 1200, 563_000_000, "KENS"),  # San Antonio
+    (30.26710, -97.74310, 1400, 551_000_000, "KVUE"),  # Austin
+    (36.16270, -86.78160, 1350, 539_000_000, "WSMV"),  # Nashville
+    (35.14950, -90.04890, 1200, 575_000_000, "WMC-TV"),  # Memphis
+    (32.29560, -90.18480, 1100, 563_000_000, "WLBT"),  # Jackson MS
+    (30.45080, -91.18720, 1150, 551_000_000, "WAFB"),  # Baton Rouge
     # West
     (34.05220, -118.24370, 1600, 191_000_000, "KABC-TV"),  # Los Angeles
-    (37.77490, -122.41940, 1500, 575_000_000, "KGO-TV"),   # San Francisco
+    (37.77490, -122.41940, 1500, 575_000_000, "KGO-TV"),  # San Francisco
     (47.60620, -122.33210, 1400, 585_000_000, "KOMO-TV"),  # Seattle
-    (45.52350, -122.67620, 1300, 551_000_000, "KGW"),       # Portland
+    (45.52350, -122.67620, 1300, 551_000_000, "KGW"),  # Portland
     (33.44840, -112.07400, 1200, 563_000_000, "KPHO-TV"),  # Phoenix
     (36.17490, -115.13740, 1150, 539_000_000, "KLAS-TV"),  # Las Vegas
     (39.73920, -104.99030, 1400, 575_000_000, "KCNC-TV"),  # Denver
-    (40.76080, -111.89100, 1300, 563_000_000, "KSL-TV"),   # Salt Lake City
+    (40.76080, -111.89100, 1300, 563_000_000, "KSL-TV"),  # Salt Lake City
     (32.71570, -117.16110, 1100, 551_000_000, "KFMB-TV"),  # San Diego
     (36.74770, -119.77260, 1200, 539_000_000, "KFSN-TV"),  # Fresno
 ]
@@ -112,33 +112,33 @@ _TOWERS_AU = [
 # can never share coverage with a metro node and will always produce solo arcs.
 _TOWERS_SOLO_US = [
     # Great Plains / High Plains
-    (44.07500, -103.22830, 1100, 551_000_000, "KEVN-Rapid City"),     # SD
-    (46.87190, -113.99300, 1050, 563_000_000, "KPAX-Missoula"),       # MT
-    (43.03540, -108.05270, 1000, 539_000_000, "KCWY-Casper"),         # WY
-    (48.23000, -101.29600,  980, 575_000_000, "KMOT-Minot"),          # ND
-    (38.81130,  -99.32640,  960, 551_000_000, "KAYS-Hays"),           # KS central
-    (32.44180, -104.22840,  900, 563_000_000, "KCAV-Carlsbad"),       # NM SE
+    (44.07500, -103.22830, 1100, 551_000_000, "KEVN-Rapid City"),  # SD
+    (46.87190, -113.99300, 1050, 563_000_000, "KPAX-Missoula"),  # MT
+    (43.03540, -108.05270, 1000, 539_000_000, "KCWY-Casper"),  # WY
+    (48.23000, -101.29600, 980, 575_000_000, "KMOT-Minot"),  # ND
+    (38.81130, -99.32640, 960, 551_000_000, "KAYS-Hays"),  # KS central
+    (32.44180, -104.22840, 900, 563_000_000, "KCAV-Carlsbad"),  # NM SE
     # Desert Southwest
-    (35.19900, -111.65100, 1200, 563_000_000, "KNAZ-Flagstaff"),      # AZ
-    (40.83870, -115.76270,  920, 539_000_000, "KELK-Elko"),           # NV
-    (31.87220, -106.42920,  880, 539_000_000, "KTSM-El Paso"),        # TX border
-    (36.90000, -111.50000, 1100, 539_000_000, "KPGE-Page-AZ"),        # AZ NE
-    (39.50000, -119.80000,  950, 551_000_000, "KRNV-Reno"),           # NV
+    (35.19900, -111.65100, 1200, 563_000_000, "KNAZ-Flagstaff"),  # AZ
+    (40.83870, -115.76270, 920, 539_000_000, "KELK-Elko"),  # NV
+    (31.87220, -106.42920, 880, 539_000_000, "KTSM-El Paso"),  # TX border
+    (36.90000, -111.50000, 1100, 539_000_000, "KPGE-Page-AZ"),  # AZ NE
+    (39.50000, -119.80000, 950, 551_000_000, "KRNV-Reno"),  # NV
     # South / Central
-    (34.74020,  -92.28990,  920, 563_000_000, "KATV-Little Rock"),    # AR
-    (37.68610,  -97.33010,  940, 551_000_000, "KWCH-Wichita"),        # KS
+    (34.74020, -92.28990, 920, 563_000_000, "KATV-Little Rock"),  # AR
+    (37.68610, -97.33010, 940, 551_000_000, "KWCH-Wichita"),  # KS
     # Pacific NW interior
-    (42.55000, -114.46000,  980, 575_000_000, "KXTF-Twin Falls"),     # ID
+    (42.55000, -114.46000, 980, 575_000_000, "KXTF-Twin Falls"),  # ID
     # Rural Midwest / Great Lakes
-    (46.48730,  -84.35670,  900, 563_000_000, "KBSF-Sault Ste Marie"),# MI UP
-    (46.78650,  -92.10350,  940, 551_000_000, "KDLH-Duluth"),         # MN
-    (47.92500,  -97.03260,  920, 563_000_000, "WDAY-Fargo"),          # ND
-    (43.54960,  -96.72960,  930, 539_000_000, "KSFY-Sioux Falls"),    # SD
-    (46.37000,  -94.87000,  920, 539_000_000, "KBRJ-Brainerd"),       # MN lakes
-    (45.00000,  -85.50000,  880, 563_000_000, "WPBN-Traverse"),       # MI north
+    (46.48730, -84.35670, 900, 563_000_000, "KBSF-Sault Ste Marie"),  # MI UP
+    (46.78650, -92.10350, 940, 551_000_000, "KDLH-Duluth"),  # MN
+    (47.92500, -97.03260, 920, 563_000_000, "WDAY-Fargo"),  # ND
+    (43.54960, -96.72960, 930, 539_000_000, "KSFY-Sioux Falls"),  # SD
+    (46.37000, -94.87000, 920, 539_000_000, "KBRJ-Brainerd"),  # MN lakes
+    (45.00000, -85.50000, 880, 563_000_000, "WPBN-Traverse"),  # MI north
     # East
-    (44.06000,  -76.15000,  850, 563_000_000, "WWTI-Watertown"),      # NY
-    (37.30000,  -79.50000,  880, 563_000_000, "WSLS-Roanoke"),        # VA
+    (44.06000, -76.15000, 850, 563_000_000, "WWTI-Watertown"),  # NY
+    (37.30000, -79.50000, 880, 563_000_000, "WSLS-Roanoke"),  # VA
 ]
 
 
@@ -149,11 +149,11 @@ _TOWERS_SOLO_US = [
 # the core for a non-degenerate bistatic angle. Cores reuse world._US_WAYPOINTS.
 # (tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon)
 _RING_TXS = [
-    (32.78060, -96.80060, 1600, 195_000_000, "WFAA-RING", 32.8968, -97.0380),   # DFW
-    (41.87810, -87.62980, 1500, 197_000_000, "WMAQ-RING", 41.9742, -87.9073),   # ORD Chicago
-    (33.74900, -84.38800, 1050, 199_000_000, "WSB-RING",  33.6407, -84.4277),   # ATL
-    (39.73920, -104.99030, 5300, 201_000_000, "KCNC-RING", 39.8561, -104.6737), # DEN
-    (39.09970, -94.57860, 900, 203_000_000, "KMBC-RING",  39.2976, -94.7139),   # MCI Kansas City
+    (32.78060, -96.80060, 1600, 195_000_000, "WFAA-RING", 32.8968, -97.0380),  # DFW
+    (41.87810, -87.62980, 1500, 197_000_000, "WMAQ-RING", 41.9742, -87.9073),  # ORD Chicago
+    (33.74900, -84.38800, 1050, 199_000_000, "WSB-RING", 33.6407, -84.4277),  # ATL
+    (39.73920, -104.99030, 5300, 201_000_000, "KCNC-RING", 39.8561, -104.6737),  # DEN
+    (39.09970, -94.57860, 900, 203_000_000, "KMBC-RING", 39.2976, -94.7139),  # MCI Kansas City
 ]
 
 
@@ -162,9 +162,7 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) ** 2
-         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
-         * math.sin(dlon / 2) ** 2)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
     return R * 2 * math.asin(math.sqrt(max(0.0, min(1.0, a))))
 
 
@@ -176,20 +174,19 @@ def _bearing_between(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
     dlon = math.radians(lon2 - lon1)
     lat1r, lat2r = math.radians(lat1), math.radians(lat2)
     x = math.sin(dlon) * math.cos(lat2r)
-    y = (math.cos(lat1r) * math.sin(lat2r)
-         - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon))
+    y = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon)
     return math.degrees(math.atan2(x, y)) % 360
 
 
 # Rural US bounding boxes used when the named solo pool needs extending.
 # Each box: (lat_min, lat_max, lon_min, lon_max)
 _RURAL_BOXES_US = [
-    (38.0, 49.0, -116.0, -96.0),   # Northern Great Plains (MT/ND/SD/NE/WY)
-    (32.0, 42.0, -108.0, -96.0),   # Southern Great Plains (KS/OK/TX panhandle/NM)
+    (38.0, 49.0, -116.0, -96.0),  # Northern Great Plains (MT/ND/SD/NE/WY)
+    (32.0, 42.0, -108.0, -96.0),  # Southern Great Plains (KS/OK/TX panhandle/NM)
     (32.0, 42.0, -117.0, -108.0),  # Desert Southwest (AZ/NV/UT/western NM)
     (40.0, 50.0, -122.0, -111.0),  # Pacific NW interior (eastern OR/WA/ID)
     (35.0, 46.0, -111.0, -103.0),  # Rockies (CO/WY/MT eastern slope)
-    (38.0, 47.0, -99.0,  -88.0),   # Rural Midwest (IA/MN/WI/IL away from cities)
+    (38.0, 47.0, -99.0, -88.0),  # Rural Midwest (IA/MN/WI/IL away from cities)
 ]
 _RURAL_FREQS = [539_000_000, 551_000_000, 563_000_000, 575_000_000, 585_000_000]
 
@@ -211,7 +208,7 @@ def _extend_solo_pool(
     Returns the (possibly extended) pool.
     """
     pool = []
-    busy = list(avoid_positions)          # positions already taken
+    busy = list(avoid_positions)  # positions already taken
 
     # Gate named entries — apply the same minimum-separation rule so named
     # towers that are too close to each other or to metro positions are skipped.
@@ -245,6 +242,7 @@ def _extend_solo_pool(
 @dataclass
 class GeneratedNodeConfig:
     """A generated node in the fleet."""
+
     node_id: str
     rx_lat: float
     rx_lon: float
@@ -258,7 +256,7 @@ class GeneratedNodeConfig:
     max_range_km: float = 50.0
     region: str = "us"
     tx_callsign: str = ""
-    beam_azimuth_deg: float | None = None   # explicit Yagi aim; None → broadside
+    beam_azimuth_deg: float | None = None  # explicit Yagi aim; None → broadside
 
 
 def _node_dict(node: GeneratedNodeConfig) -> dict:
@@ -311,7 +309,7 @@ def _node_display_fuzz(node_id: str) -> tuple[float, float]:
 _WATER_BOXES: list[tuple[float, float, float, float]] = [
     # (lat_min, lat_max, lon_min, lon_max)
     # Great Lakes
-    (41.5, 49.0, -92.5, -76.0),   # approximate Great Lakes bounding box
+    (41.5, 49.0, -92.5, -76.0),  # approximate Great Lakes bounding box
     # Gulf of Mexico (open water — broad nearshore strip)
     (18.0, 30.5, -98.0, -80.0),
     # Atlantic east of Florida / Florida Straits / Bahamas
@@ -356,113 +354,113 @@ _WATER_BOXES: list[tuple[float, float, float, float]] = [
 # If an RX position is within 5 km of a land point, it's allowed.
 _COASTAL_LAND_POINTS: list[tuple[float, float]] = [
     # Great Lakes cities
-    (41.88, -87.63),   # Chicago
-    (42.33, -83.05),   # Detroit
-    (41.50, -81.69),   # Cleveland
-    (43.16, -79.24),   # Niagara Falls
-    (42.89, -78.88),   # Buffalo
-    (44.98, -93.27),   # Minneapolis
-    (43.04, -87.91),   # Milwaukee
-    (42.96, -85.67),   # Grand Rapids
-    (46.79, -92.10),   # Duluth
-    (43.05, -89.40),   # Madison WI
-    (44.51, -88.01),   # Green Bay WI
-    (42.96, -82.45),   # Port Huron MI
-    (44.27, -85.60),   # Cadillac MI
-    (42.26, -85.59),   # Kalamazoo MI
-    (41.66, -83.56),   # Toledo OH / Maumee Bay
-    (43.96, -77.96),   # Oswego NY
-    (44.70, -75.48),   # Ogdensburg NY
-    (43.45, -76.51),   # Oswego / Pulaski NY
+    (41.88, -87.63),  # Chicago
+    (42.33, -83.05),  # Detroit
+    (41.50, -81.69),  # Cleveland
+    (43.16, -79.24),  # Niagara Falls
+    (42.89, -78.88),  # Buffalo
+    (44.98, -93.27),  # Minneapolis
+    (43.04, -87.91),  # Milwaukee
+    (42.96, -85.67),  # Grand Rapids
+    (46.79, -92.10),  # Duluth
+    (43.05, -89.40),  # Madison WI
+    (44.51, -88.01),  # Green Bay WI
+    (42.96, -82.45),  # Port Huron MI
+    (44.27, -85.60),  # Cadillac MI
+    (42.26, -85.59),  # Kalamazoo MI
+    (41.66, -83.56),  # Toledo OH / Maumee Bay
+    (43.96, -77.96),  # Oswego NY
+    (44.70, -75.48),  # Ogdensburg NY
+    (43.45, -76.51),  # Oswego / Pulaski NY
     # Gulf Coast cities
-    (29.76, -95.36),   # Houston
-    (30.27, -97.74),   # Austin
-    (30.45, -91.19),   # Baton Rouge
-    (30.00, -90.07),   # New Orleans
-    (27.95, -82.46),   # Tampa
-    (25.76, -80.19),   # Miami
-    (28.54, -81.38),   # Orlando
-    (30.33, -81.66),   # Jacksonville
-    (27.77, -82.64),   # St. Petersburg
-    (29.42, -98.49),   # San Antonio
-    (30.39, -87.69),   # Pensacola
-    (30.22, -92.02),   # Lafayette
-    (29.95, -90.07),   # New Orleans Lakeshore
-    (30.69, -88.04),   # Mobile AL
-    (29.70, -95.01),   # Pasadena TX
-    (29.55, -95.13),   # League City TX
+    (29.76, -95.36),  # Houston
+    (30.27, -97.74),  # Austin
+    (30.45, -91.19),  # Baton Rouge
+    (30.00, -90.07),  # New Orleans
+    (27.95, -82.46),  # Tampa
+    (25.76, -80.19),  # Miami
+    (28.54, -81.38),  # Orlando
+    (30.33, -81.66),  # Jacksonville
+    (27.77, -82.64),  # St. Petersburg
+    (29.42, -98.49),  # San Antonio
+    (30.39, -87.69),  # Pensacola
+    (30.22, -92.02),  # Lafayette
+    (29.95, -90.07),  # New Orleans Lakeshore
+    (30.69, -88.04),  # Mobile AL
+    (29.70, -95.01),  # Pasadena TX
+    (29.55, -95.13),  # League City TX
     # Tampa Bay shores (box: 27.35-28.1°N, -82.85 to -82.4°W)
     # NOTE: only inland / peninsula cities — do NOT add right-on-shore suburbs
     # (Ruskin, Apollo Beach, Gibsonton) because at any positive radius their
     # circle extends into the bay and exempts mid-bay positions.
-    (27.97, -82.80),   # Clearwater FL
-    (28.02, -82.77),   # Dunedin FL
-    (27.99, -82.69),   # Safety Harbor FL
-    (27.94, -82.29),   # Brandon FL
-    (27.87, -82.33),   # Riverview FL
-    (27.52, -82.57),   # Palmetto FL
-    (27.50, -82.57),   # Bradenton FL
-    (27.34, -82.54),   # Sarasota FL
+    (27.97, -82.80),  # Clearwater FL
+    (28.02, -82.77),  # Dunedin FL
+    (27.99, -82.69),  # Safety Harbor FL
+    (27.94, -82.29),  # Brandon FL
+    (27.87, -82.33),  # Riverview FL
+    (27.52, -82.57),  # Palmetto FL
+    (27.50, -82.57),  # Bradenton FL
+    (27.34, -82.54),  # Sarasota FL
     # Charlotte Harbor shores (box: 26.5-27.1°N, -82.35 to -81.85°W)
-    (27.09, -82.43),   # Venice FL (north edge)
-    (26.93, -82.05),   # Port Charlotte FL
-    (26.63, -81.87),   # Cape Coral FL (east)
-    (26.71, -81.93),   # Punta Gorda FL
+    (27.09, -82.43),  # Venice FL (north edge)
+    (26.93, -82.05),  # Port Charlotte FL
+    (26.63, -81.87),  # Cape Coral FL (east)
+    (26.71, -81.93),  # Punta Gorda FL
     # Sarasota Bay (box: 27.1-27.55°N, -82.75 to -82.5°W)
-    (27.34, -82.54),   # Sarasota FL (already above, reuses)
-    (27.48, -82.57),   # North Port FL
+    (27.34, -82.54),  # Sarasota FL (already above, reuses)
+    (27.48, -82.57),  # North Port FL
     # Lake Pontchartrain shores (box: 30.05-30.45°N, -90.55 to -89.65°W)
-    (30.07, -89.93),   # Slidell LA (east shore)
-    (30.43, -90.10),   # Mandeville LA (north shore)
-    (30.20, -90.23),   # Metairie / Kenner LA (south shore)
-    (30.18, -89.75),   # Bay St. Louis MS
+    (30.07, -89.93),  # Slidell LA (east shore)
+    (30.43, -90.10),  # Mandeville LA (north shore)
+    (30.20, -90.23),  # Metairie / Kenner LA (south shore)
+    (30.18, -89.75),  # Bay St. Louis MS
     # Corpus Christi Bay (box: 27.7-27.95°N, -97.5 to -97.05°W)
-    (27.80, -97.40),   # Corpus Christi TX
-    (27.73, -97.14),   # Portland TX
-    (27.86, -97.08),   # Ingleside TX
+    (27.80, -97.40),  # Corpus Christi TX
+    (27.73, -97.14),  # Portland TX
+    (27.86, -97.08),  # Ingleside TX
     # Matagorda Bay (box: 28.45-28.8°N, -96.75 to -96.15°W)
-    (28.69, -96.00),   # El Campo / Bay City TX
-    (28.60, -96.10),   # Palacios TX
-    (28.72, -96.67),   # Bay City area
+    (28.69, -96.00),  # El Campo / Bay City TX
+    (28.60, -96.10),  # Palacios TX
+    (28.72, -96.67),  # Bay City area
     # Pamlico / Albemarle Sound (box: 35.0-36.1°N, -76.85 to -75.65°W)
-    (35.54, -77.07),   # Greenville NC (west)
-    (35.10, -76.89),   # New Bern NC (southwest)
-    (36.07, -76.77),   # Elizabeth City NC (north)
-    (36.00, -75.68),   # Kill Devil Hills / OBX NC (east shore)
-    (35.26, -75.71),   # Ocracoke Island NC (southeast)
+    (35.54, -77.07),  # Greenville NC (west)
+    (35.10, -76.89),  # New Bern NC (southwest)
+    (36.07, -76.77),  # Elizabeth City NC (north)
+    (36.00, -75.68),  # Kill Devil Hills / OBX NC (east shore)
+    (35.26, -75.71),  # Ocracoke Island NC (southeast)
     # Florida Atlantic coast cities (for FL Atlantic water box)
-    (26.12, -80.14),   # Fort Lauderdale FL
-    (26.36, -80.08),   # Boca Raton FL
-    (26.72, -80.05),   # West Palm Beach FL
-    (27.20, -80.25),   # Stuart / Treasure Coast FL
-    (27.64, -80.40),   # Vero Beach FL
-    (28.08, -80.61),   # Melbourne / Brevard County FL
-    (28.45, -80.79),   # Cocoa / Rockledge FL
-    (28.61, -80.82),   # Titusville / Merritt Island FL
-    (29.03, -80.93),   # New Smyrna Beach FL
-    (29.21, -81.00),   # Daytona Beach FL
-    (29.89, -81.31),   # St. Augustine FL
-    (30.28, -81.39),   # Jacksonville Beach FL
+    (26.12, -80.14),  # Fort Lauderdale FL
+    (26.36, -80.08),  # Boca Raton FL
+    (26.72, -80.05),  # West Palm Beach FL
+    (27.20, -80.25),  # Stuart / Treasure Coast FL
+    (27.64, -80.40),  # Vero Beach FL
+    (28.08, -80.61),  # Melbourne / Brevard County FL
+    (28.45, -80.79),  # Cocoa / Rockledge FL
+    (28.61, -80.82),  # Titusville / Merritt Island FL
+    (29.03, -80.93),  # New Smyrna Beach FL
+    (29.21, -81.00),  # Daytona Beach FL
+    (29.89, -81.31),  # St. Augustine FL
+    (30.28, -81.39),  # Jacksonville Beach FL
     # Eastern seaboard
-    (38.91, -77.04),   # Washington DC
-    (39.95, -75.16),   # Philadelphia
-    (40.71, -74.01),   # New York
-    (42.36, -71.06),   # Boston
-    (36.85, -75.98),   # Norfolk
-    (32.78, -79.93),   # Charleston SC
-    (34.22, -77.91),   # Wilmington NC
-    (33.45, -75.96),   # outer banks NC (off coast; excluded)
-    (38.32, -75.09),   # Ocean City MD
-    (39.94, -74.07),   # Toms River NJ
-    (40.92, -72.64),   # Long Island NY (east)
-    (41.27, -72.89),   # New Haven CT
-    (41.46, -71.31),   # Providence RI
-    (43.66, -70.25),   # Portland ME
-    (44.80, -68.77),   # Bangor ME
-    (44.42, -73.14),   # Burlington VT (Lake Champlain)
-    (43.09, -76.15),   # Syracuse NY
-    (42.45, -76.51),   # Ithaca NY
-    (44.18, -76.49),   # Kingston ON / Wolfe Island
+    (38.91, -77.04),  # Washington DC
+    (39.95, -75.16),  # Philadelphia
+    (40.71, -74.01),  # New York
+    (42.36, -71.06),  # Boston
+    (36.85, -75.98),  # Norfolk
+    (32.78, -79.93),  # Charleston SC
+    (34.22, -77.91),  # Wilmington NC
+    (33.45, -75.96),  # outer banks NC (off coast; excluded)
+    (38.32, -75.09),  # Ocean City MD
+    (39.94, -74.07),  # Toms River NJ
+    (40.92, -72.64),  # Long Island NY (east)
+    (41.27, -72.89),  # New Haven CT
+    (41.46, -71.31),  # Providence RI
+    (43.66, -70.25),  # Portland ME
+    (44.80, -68.77),  # Bangor ME
+    (44.42, -73.14),  # Burlington VT (Lake Champlain)
+    (43.09, -76.15),  # Syracuse NY
+    (42.45, -76.51),  # Ithaca NY
+    (44.18, -76.49),  # Kingston ON / Wolfe Island
     # Pacific coast
     (34.05, -118.24),  # Los Angeles
     (37.77, -122.42),  # San Francisco
@@ -519,15 +517,17 @@ def _get_land_check():
 
     data_dir = Path(__file__).parent / "data"
     try:
+
         def _load(name):
             with open(data_dir / name) as f:
                 return [shape(feat["geometry"]) for feat in json.load(f)["features"]]
+
         land = _load("ne_10m_land.geojson")
         lakes = _load("ne_50m_lakes.geojson")
     except (OSError, ValueError) as exc:
         logging.getLogger(__name__).warning(
-            "Natural Earth data unavailable (%s); water-rejection falls back "
-            "to bounding boxes.", exc,
+            "Natural Earth data unavailable (%s); water-rejection falls back to bounding boxes.",
+            exc,
         )
         return None
 
@@ -584,8 +584,10 @@ def _candidate_is_safe(
 
 
 def _place_rx_on_land(
-    tx_lat: float, tx_lon: float,
-    dist_min_km: float = 5.0, dist_max_km: float = 40.0,
+    tx_lat: float,
+    tx_lon: float,
+    dist_min_km: float = 5.0,
+    dist_max_km: float = 40.0,
     max_attempts: int = 80,
     display_node_id: str | None = None,
 ) -> tuple[float, float]:
@@ -595,9 +597,7 @@ def _place_rx_on_land(
         distance_km = random.uniform(dist_min_km, dist_max_km)
         bearing_rad = random.uniform(0, 2 * math.pi)
         dlat = (distance_km * math.cos(bearing_rad)) / R
-        dlon = (distance_km * math.sin(bearing_rad)) / (
-            R * math.cos(math.radians(tx_lat))
-        )
+        dlon = (distance_km * math.sin(bearing_rad)) / (R * math.cos(math.radians(tx_lat)))
         rx_lat = tx_lat + math.degrees(dlat)
         rx_lon = tx_lon + math.degrees(dlon)
         if _candidate_is_safe(rx_lat, rx_lon, display_node_id):
@@ -606,9 +606,7 @@ def _place_rx_on_land(
         for bearing_deg in range(0, 360, 15):
             bearing_rad = math.radians(bearing_deg)
             dlat = (step_km * math.cos(bearing_rad)) / R
-            dlon = (step_km * math.sin(bearing_rad)) / (
-                R * math.cos(math.radians(tx_lat))
-            )
+            dlon = (step_km * math.sin(bearing_rad)) / (R * math.cos(math.radians(tx_lat)))
             rx_lat = tx_lat + math.degrees(dlat)
             rx_lon = tx_lon + math.degrees(dlon)
             if _candidate_is_safe(rx_lat, rx_lon, display_node_id):
@@ -653,16 +651,15 @@ def _generate_coverage_ring(
     for i in range(n):
         bearing_rad = math.radians((start_bearing_deg + 360.0 * i / n) % 360.0)
         dlat = (radius_km * math.cos(bearing_rad)) / R
-        dlon = (radius_km * math.sin(bearing_rad)) / (
-            R * math.cos(math.radians(core_lat))
-        )
+        dlon = (radius_km * math.sin(bearing_rad)) / (R * math.cos(math.radians(core_lat)))
         rx_lat = core_lat + math.degrees(dlat)
         rx_lon = core_lon + math.degrees(dlon)
 
         node_id = f"{prefix}-{i + 1:04d}"
         if not _candidate_is_safe(rx_lat, rx_lon, node_id):
             rx_lat, rx_lon = _place_rx_on_land(
-                core_lat, core_lon,
+                core_lat,
+                core_lon,
                 dist_min_km=max(5.0, radius_km - 5),
                 dist_max_km=radius_km + 5,
                 display_node_id=node_id,
@@ -729,14 +726,16 @@ def coverage_cells(
     cells = []
     for ring_id, spec, size in _active_rings(n_cluster, n_clusters, ring_spec):
         tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon = spec
-        cells.append({
-            "ring_id": ring_id,
-            "core_lat": core_lat,
-            "core_lon": core_lon,
-            "radius_km": traffic_radius_km,
-            "ops_weight": float(size),
-            "illuminator": callsign,
-        })
+        cells.append(
+            {
+                "ring_id": ring_id,
+                "core_lat": core_lat,
+                "core_lon": core_lon,
+                "radius_km": traffic_radius_km,
+                "ops_weight": float(size),
+                "illuminator": callsign,
+            }
+        )
     return cells
 
 
@@ -820,8 +819,10 @@ def generate_fleet(
     # Each metro area gets multiple real towers so nodes in the same city
     # use DIFFERENT transmitters instead of all sharing the same one.
     metro_api_towers: dict[str, list[dict]] = {}
+
     def _cache_key(lat, lon):
         return f"{lat:.4f},{lon:.4f}"
+
     if use_tower_api:
         try:
             try:
@@ -840,6 +841,7 @@ def generate_fleet(
                     metro_api_towers[key] = metro_api_towers_raw[key]
         except Exception as exc:
             import logging
+
             logging.warning("Tower API lookup failed, using hardcoded towers: %s", exc)
 
     # Allocate solo and cluster node counts, carving both from metro allocation
@@ -910,9 +912,7 @@ def generate_fleet(
         # also enforced to be at least min_sep_km from each other.
         # 400 km > 2 × 140 km fleet range → solo coverage circles never
         # touch each other or any metro cluster, making them visually isolated.
-        us_metro_occ: list[tuple[float, float]] = [
-            (t[0], t[1]) for t in _TOWERS_US
-        ]
+        us_metro_occ: list[tuple[float, float]] = [(t[0], t[1]) for t in _TOWERS_US]
         solo_pool = _extend_solo_pool(
             list(solo_towers),
             n_solo,
@@ -922,7 +922,7 @@ def generate_fleet(
         random.shuffle(solo_pool)
 
         for j in range(min(n_solo, len(solo_pool))):
-            tower = solo_pool[j]          # strict: never re-use a tower index
+            tower = solo_pool[j]  # strict: never re-use a tower index
             tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
 
             node_id = f"synth-SOLO-{j + 1:04d}"
@@ -964,18 +964,20 @@ def generate_fleet(
     ring_nodes = []
     for ring_id, spec, size in _active_rings(n_cluster, n_clusters, ring_spec):
         tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon = spec
-        ring_nodes.extend(_generate_coverage_ring(
-            n=size,
-            core_lat=core_lat,
-            core_lon=core_lon,
-            tx_tower=(tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign),
-            prefix=ring_id,
-            radius_km=ring_radius_km,
-            beam_width_deg=ring_beam_width_deg,
-            max_range_km=ring_max_range_km,
-            aim=ring_aim,
-        ))
-    nodes = ring_nodes + nodes   # prepend so ring IDs are first
+        ring_nodes.extend(
+            _generate_coverage_ring(
+                n=size,
+                core_lat=core_lat,
+                core_lon=core_lon,
+                tx_tower=(tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign),
+                prefix=ring_id,
+                radius_km=ring_radius_km,
+                beam_width_deg=ring_beam_width_deg,
+                max_range_km=ring_max_range_km,
+                aim=ring_aim,
+            )
+        )
+    nodes = ring_nodes + nodes  # prepend so ring IDs are first
 
     return nodes
 
@@ -983,6 +985,7 @@ def generate_fleet(
 def fleet_summary(nodes: list[dict]) -> dict:
     """Compute a summary of the fleet configuration."""
     from collections import Counter
+
     regions = Counter(n["region"] for n in nodes)
     towers = Counter(n["tx_callsign"] for n in nodes)
     return {
@@ -1007,27 +1010,50 @@ def main():
     parser.add_argument("--regions", type=str, default="us", help="Comma-separated regions: us,eu,au")
     parser.add_argument("--output", type=str, default="fleet_config.json", help="Output file path")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--n-cluster", "--n-ring", dest="n_cluster", type=int, default=30,
-                        help="Total coverage-ring receivers (split across rings)")
-    parser.add_argument("--n-clusters", "--n-rings", dest="n_clusters", type=int, default=5,
-                        help="Number of metro coverage rings (more = multinode spread across the map)")
-    parser.add_argument("--ring-radius-km", type=float, default=18.0,
-                        help="Receiver ring radius around each metro core")
-    parser.add_argument("--ring-beam-width-deg", type=float, default=50.0,
-                        help="Yagi half-power beamwidth for ring receivers")
-    parser.add_argument("--ring-max-range-km", type=float, default=60.0,
-                        help="Detection range for ring receivers")
-    parser.add_argument("--ring-aim", type=str, default="core", choices=["core", "broadside"],
-                        help="Aim ring beams at the metro core or broadside to TX")
+    parser.add_argument(
+        "--n-cluster",
+        "--n-ring",
+        dest="n_cluster",
+        type=int,
+        default=30,
+        help="Total coverage-ring receivers (split across rings)",
+    )
+    parser.add_argument(
+        "--n-clusters",
+        "--n-rings",
+        dest="n_clusters",
+        type=int,
+        default=5,
+        help="Number of metro coverage rings (more = multinode spread across the map)",
+    )
+    parser.add_argument(
+        "--ring-radius-km", type=float, default=18.0, help="Receiver ring radius around each metro core"
+    )
+    parser.add_argument(
+        "--ring-beam-width-deg", type=float, default=50.0, help="Yagi half-power beamwidth for ring receivers"
+    )
+    parser.add_argument("--ring-max-range-km", type=float, default=60.0, help="Detection range for ring receivers")
+    parser.add_argument(
+        "--ring-aim",
+        type=str,
+        default="core",
+        choices=["core", "broadside"],
+        help="Aim ring beams at the metro core or broadside to TX",
+    )
     args = parser.parse_args()
 
     regions = [r.strip().lower() for r in args.regions.split(",")]
-    nodes = generate_fleet(n_nodes=args.nodes, regions=regions, seed=args.seed,
-                           n_cluster=args.n_cluster, n_clusters=args.n_clusters,
-                           ring_radius_km=args.ring_radius_km,
-                           ring_beam_width_deg=args.ring_beam_width_deg,
-                           ring_max_range_km=args.ring_max_range_km,
-                           ring_aim=args.ring_aim)
+    nodes = generate_fleet(
+        n_nodes=args.nodes,
+        regions=regions,
+        seed=args.seed,
+        n_cluster=args.n_cluster,
+        n_clusters=args.n_clusters,
+        ring_radius_km=args.ring_radius_km,
+        ring_beam_width_deg=args.ring_beam_width_deg,
+        ring_max_range_km=args.ring_max_range_km,
+        ring_aim=args.ring_aim,
+    )
     cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters)
     summary = fleet_summary(nodes)
 

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      # retina-custody is a sibling library on no package index, so pip cannot
+      # resolve the `retina-custody>=0.1.0` dependency on its own. The pin stays
+      # generic in pyproject.toml on purpose: Tower-Finder installs these libs
+      # from local submodule paths, and a direct URL there would collide with
+      # "conflicting URLs for package retina-custody".
+      - run: uv pip install --system "retina-custody @ git+https://github.com/offworldlabs/retina-custody@v0.1.0"
+
+      # Pinned deliberately: an unpinned linter picks up new rules on release
+      # and turns a green branch red without anything in this repo changing.
+      - run: uv pip install --system -e '.[dev]' pre-commit==4.6.2 vulture==2.14
+
+      - run: pre-commit run --all-files --show-diff-on-failure
+
+      - run: pytest

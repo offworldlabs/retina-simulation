@@ -55,16 +55,18 @@ def _cells_to_metrocells(cell_dicts: list[dict]) -> list[MetroCell]:
     cells = []
     for c in cell_dicts:
         if c.get("core_lat") is None or c.get("core_lon") is None:
-            log.warning("Skipping coverage cell without core_lat/core_lon: %r",
-                        c.get("ring_id", c))
+            log.warning("Skipping coverage cell without core_lat/core_lon: %r", c.get("ring_id", c))
             continue
-        cells.append(MetroCell(
-            core_lat=c["core_lat"],
-            core_lon=c["core_lon"],
-            radius_km=c.get("radius_km", 70.0),
-            ops_weight=c.get("ops_weight", 1.0),
-        ))
+        cells.append(
+            MetroCell(
+                core_lat=c["core_lat"],
+                core_lon=c["core_lon"],
+                radius_km=c.get("radius_km", 70.0),
+                ops_weight=c.get("ops_weight", 1.0),
+            )
+        )
     return cells
+
 
 RETINA_VERSION = "1.0"
 HEARTBEAT_INTERVAL_S = 60
@@ -73,6 +75,7 @@ CONFIG_ACK_TIMEOUT_S = 10
 
 def _config_hash(cfg: dict) -> str:
     import hashlib
+
     cfg_str = json.dumps(cfg, sort_keys=True)
     return hashlib.sha256(cfg_str.encode()).hexdigest()[:16]
 
@@ -132,27 +135,31 @@ class NodeConnection:
     async def handshake(self) -> bool:
         """Perform RETINA protocol handshake."""
         # HELLO
-        await self._send({
-            "type": "HELLO",
-            "node_id": self.node_id,
-            "version": RETINA_VERSION,
-            "is_synthetic": True,
-            "capabilities": {
-                "detection": True,
-                "adsb_correlation": True,
-                "doppler": True,
-                "config_hash": True,
-                "heartbeat": True,
-            },
-        })
+        await self._send(
+            {
+                "type": "HELLO",
+                "node_id": self.node_id,
+                "version": RETINA_VERSION,
+                "is_synthetic": True,
+                "capabilities": {
+                    "detection": True,
+                    "adsb_correlation": True,
+                    "doppler": True,
+                    "config_hash": True,
+                    "heartbeat": True,
+                },
+            }
+        )
 
         # CONFIG
-        await self._send({
-            "type": "CONFIG",
-            "node_id": self.node_id,
-            "config_hash": self._cfg_hash,
-            "config": self.cfg,
-        })
+        await self._send(
+            {
+                "type": "CONFIG",
+                "node_id": self.node_id,
+                "config_hash": self._cfg_hash,
+                "config": self.cfg,
+            }
+        )
 
         # Wait for CONFIG_ACK
         for _ in range(3):
@@ -162,21 +169,25 @@ class NodeConnection:
                     self.handshake_ok = True
                     return True
             # Re-send CONFIG on timeout
-            await self._send({
-                "type": "CONFIG",
-                "node_id": self.node_id,
-                "config_hash": self._cfg_hash,
-                "config": self.cfg,
-            })
+            await self._send(
+                {
+                    "type": "CONFIG",
+                    "node_id": self.node_id,
+                    "config_hash": self._cfg_hash,
+                    "config": self.cfg,
+                }
+            )
         return False
 
     async def send_detection(self, frame: dict):
         """Send a detection frame."""
-        await self._send({
-            "type": "DETECTION",
-            "node_id": self.node_id,
-            "data": frame,
-        })
+        await self._send(
+            {
+                "type": "DETECTION",
+                "node_id": self.node_id,
+                "data": frame,
+            }
+        )
         self.frames_sent += 1
 
     async def send_heartbeat(self):
@@ -184,13 +195,15 @@ class NodeConnection:
         now = time.monotonic()
         if now - self.last_heartbeat < HEARTBEAT_INTERVAL_S:
             return
-        await self._send({
-            "type": "HEARTBEAT",
-            "node_id": self.node_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "config_hash": self._cfg_hash,
-            "status": "active",
-        })
+        await self._send(
+            {
+                "type": "HEARTBEAT",
+                "node_id": self.node_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "config_hash": self._cfg_hash,
+                "status": "active",
+            }
+        )
         self.last_heartbeat = now
 
     async def close(self):
@@ -308,8 +321,11 @@ class FleetOrchestrator:
 
         log.info(
             "SimulationWorld: center=(%.2f, %.2f), %d nodes, %d-%d aircraft, %d metro cells",
-            center_lat, center_lon, len(self.node_configs),
-            self.world.min_aircraft, self.world.max_aircraft,
+            center_lat,
+            center_lon,
+            len(self.node_configs),
+            self.world.min_aircraft,
+            self.world.max_aircraft,
             len(self.world.metro_cells),
         )
 
@@ -357,7 +373,7 @@ class FleetOrchestrator:
             round_start_connected = len(self.connections)
 
             for i in range(0, len(pending), batch_size):
-                batch = pending[i:i + batch_size]
+                batch = pending[i : i + batch_size]
                 failed = await self._connect_batch(batch)
                 next_pending.extend(failed)
                 len(self.connections) - round_start_connected
@@ -443,9 +459,9 @@ class FleetOrchestrator:
         while self._running:
             now = time.monotonic()
             due = [
-                conn for conn in self.connections.values()
-                if not conn.connected
-                and now >= self._reconnect_next.get(conn.node_id, 0.0)
+                conn
+                for conn in self.connections.values()
+                if not conn.connected and now >= self._reconnect_next.get(conn.node_id, 0.0)
             ]
 
             if due:
@@ -468,7 +484,8 @@ class FleetOrchestrator:
                 still_down = sum(1 for c in self.connections.values() if not c.connected)
                 log.info(
                     "Auto-reconnect done: %d recovered, %d still down",
-                    reconnected, still_down,
+                    reconnected,
+                    still_down,
                 )
 
             await asyncio.sleep(check_interval_s)
@@ -516,7 +533,10 @@ class FleetOrchestrator:
         log.info(
             "Starting simulation loop (tick=%.1fs, frame_interval=%.1fs, "
             "time_scale=%.1fx, mode=%s, duration=%s, ~%.1f frames/s)",
-            tick_dt, self.frame_interval, self.time_scale, self.mode,
+            tick_dt,
+            self.frame_interval,
+            self.time_scale,
+            self.mode,
             f"{duration_s}s" if duration_s else "infinite",
             n_nodes / self.frame_interval,
         )
@@ -559,8 +579,12 @@ class FleetOrchestrator:
                     log.info(
                         "STATS: %.0fs elapsed | %d active nodes | %d frames (%.0f/s) | "
                         "%d detections (%.0f/s) | %d errors | %d aircraft",
-                        elapsed, active, self._stats["total_frames"], fps,
-                        self._stats["total_detections"], dps,
+                        elapsed,
+                        active,
+                        self._stats["total_frames"],
+                        fps,
+                        self._stats["total_detections"],
+                        dps,
                         self._stats["errors"],
                         len(self.world.aircraft) if self.world else 0,
                     )
@@ -607,10 +631,14 @@ class FleetOrchestrator:
     def save_ground_truth(self, path: str):
         """Save ground truth data for offline validation."""
         with open(path, "w") as f:
-            json.dump({
-                "fleet_stats": self.get_stats(),
-                "ground_truth": self.ground_truth[-200:],  # last 200 snapshots
-            }, f, indent=2)
+            json.dump(
+                {
+                    "fleet_stats": self.get_stats(),
+                    "ground_truth": self.ground_truth[-200:],  # last 200 snapshots
+                },
+                f,
+                indent=2,
+            )
         log.info("Ground truth saved: %s (%d snapshots)", path, len(self.ground_truth))
 
 
@@ -647,24 +675,29 @@ async def _push_ground_truth_live(
                 hex_code = ac.get("adsb_hex") or ac.get("id", "")
                 if not hex_code:
                     continue
-                payload_aircraft.append({
-                    "hex": hex_code,
-                    "lat": ac["lat"],
-                    "lon": ac["lon"],
-                    "alt_m": ac["alt_km"] * 1000,
-                    "heading": ac.get("heading", 0),
-                    "speed_ms": ac.get("speed_ms", 0),
-                    "object_type": ac.get("object_type", "aircraft"),
-                    "is_anomalous": ac.get("is_anomalous", False),
-                })
+                payload_aircraft.append(
+                    {
+                        "hex": hex_code,
+                        "lat": ac["lat"],
+                        "lon": ac["lon"],
+                        "alt_m": ac["alt_km"] * 1000,
+                        "heading": ac.get("heading", 0),
+                        "speed_ms": ac.get("speed_ms", 0),
+                        "object_type": ac.get("object_type", "aircraft"),
+                        "is_anomalous": ac.get("is_anomalous", False),
+                    }
+                )
 
             if payload_aircraft:
-                body = json.dumps({
-                    "ts_ms": int(time.time() * 1000),
-                    "aircraft": payload_aircraft,
-                }).encode()
+                body = json.dumps(
+                    {
+                        "ts_ms": int(time.time() * 1000),
+                        "aircraft": payload_aircraft,
+                    }
+                ).encode()
                 req = urllib.request.Request(
-                    url, data=body,
+                    url,
+                    data=body,
                     headers={
                         "Content-Type": "application/json",
                         **({"X-API-Key": _k} if (_k := os.environ.get("RADAR_API_KEY", "")) else {}),
@@ -697,6 +730,7 @@ async def _push_real_adsb(
             from clients.adsb_lol import AdsbLolClient
         except ImportError:
             import importlib.util
+
             _p = os.path.join(os.path.dirname(os.path.dirname(__file__)), "clients", "adsb_lol.py")
             spec = importlib.util.spec_from_file_location("adsb_lol", _p)
             mod = importlib.util.module_from_spec(spec)
@@ -727,23 +761,28 @@ async def _push_real_adsb(
                 h = ac.get("hex", "")
                 if not h or not ac.get("lat") or not ac.get("lon"):
                     continue
-                payload.append({
-                    "hex": h,
-                    "flight": ac.get("flight", ""),
-                    "lat": ac["lat"],
-                    "lon": ac["lon"],
-                    "alt_baro": ac.get("alt_baro", 0),
-                    "gs": ac.get("gs", 0),
-                    "track": ac.get("track", 0),
-                })
+                payload.append(
+                    {
+                        "hex": h,
+                        "flight": ac.get("flight", ""),
+                        "lat": ac["lat"],
+                        "lon": ac["lon"],
+                        "alt_baro": ac.get("alt_baro", 0),
+                        "gs": ac.get("gs", 0),
+                        "track": ac.get("track", 0),
+                    }
+                )
 
             if payload:
-                body = json.dumps({
-                    "ts_ms": int(time.time() * 1000),
-                    "aircraft": payload,
-                }).encode()
+                body = json.dumps(
+                    {
+                        "ts_ms": int(time.time() * 1000),
+                        "aircraft": payload,
+                    }
+                ).encode()
                 req = urllib.request.Request(
-                    url, data=body,
+                    url,
+                    data=body,
                     headers={
                         "Content-Type": "application/json",
                         **({"X-API-Key": _k} if (_k := os.environ.get("RADAR_API_KEY", "")) else {}),
@@ -770,9 +809,9 @@ async def _poll_simulation_config(
     log.info("Simulation config polling started (url=%s, interval=%.1fs)", base_url, interval_s)
     url = f"{base_url}/api/simulation/config"
     loop = asyncio.get_event_loop()
-    ssl_context = ssl._create_unverified_context() if (  # noqa: S323 — localhost dev path only
-        "localhost" in base_url or "127.0.0.1" in base_url
-    ) else None
+    ssl_context = None
+    if "localhost" in base_url or "127.0.0.1" in base_url:
+        ssl_context = ssl._create_unverified_context()  # noqa: S323 — unverified context only for the localhost/127.0.0.1 dev path above
     last_updated_at = 0.0
 
     while orchestrator._running:
@@ -782,8 +821,10 @@ async def _poll_simulation_config(
             continue
 
         try:
+
             def _fetch():
                 import json as _json
+
                 with urllib.request.urlopen(url, context=ssl_context, timeout=5) as resp:
                     return _json.loads(resp.read())
 
@@ -791,16 +832,15 @@ async def _poll_simulation_config(
             updated_at = cfg.get("_updated_at", 0.0)
             if updated_at > last_updated_at:
                 orchestrator.world.frac_anomalous = float(cfg.get("frac_anomalous", 0.05))
-                orchestrator.world.frac_drone     = float(cfg.get("frac_drone",     0.10))
-                orchestrator.world.frac_dark      = float(cfg.get("frac_dark",      0.15))
+                orchestrator.world.frac_drone = float(cfg.get("frac_drone", 0.10))
+                orchestrator.world.frac_dark = float(cfg.get("frac_dark", 0.15))
                 if "min_aircraft" in cfg:
                     orchestrator.world.min_aircraft = int(cfg["min_aircraft"])
                 if "max_aircraft" in cfg:
                     orchestrator.world.max_aircraft = int(cfg["max_aircraft"])
                 last_updated_at = updated_at
                 log.info(
-                    "Simulation config updated: anomalous=%.2f drone=%.2f dark=%.2f "
-                    "aircraft=%d–%d",
+                    "Simulation config updated: anomalous=%.2f drone=%.2f dark=%.2f aircraft=%d–%d",
                     orchestrator.world.frac_anomalous,
                     orchestrator.world.frac_drone,
                     orchestrator.world.frac_dark,
@@ -831,6 +871,7 @@ async def _push_adsb_live(
     ssl_context = None
     if "localhost" in base_url or "127.0.0.1" in base_url:
         import ssl as _ssl
+
         ssl_context = _ssl._create_unverified_context()  # noqa: S323 — unverified context only for the localhost/127.0.0.1 dev path above
 
     while orchestrator._running:
@@ -849,25 +890,30 @@ async def _push_adsb_live(
                 if not hex_code:
                     continue
                 speed_ms = ac.get("speed_ms", 0)
-                payload_aircraft.append({
-                    "hex": hex_code,
-                    "flight": "",
-                    "lat": round(ac["lat"], 5),
-                    "lon": round(ac["lon"], 5),
-                    "alt_baro": round(ac["alt_km"] * 1000 / 0.3048),
-                    "gs": round(speed_ms * 1.94384, 1),
-                    "track": round(ac.get("heading", 0), 1),
-                })
+                payload_aircraft.append(
+                    {
+                        "hex": hex_code,
+                        "flight": "",
+                        "lat": round(ac["lat"], 5),
+                        "lon": round(ac["lon"], 5),
+                        "alt_baro": round(ac["alt_km"] * 1000 / 0.3048),
+                        "gs": round(speed_ms * 1.94384, 1),
+                        "track": round(ac.get("heading", 0), 1),
+                    }
+                )
 
             if not payload_aircraft:
                 continue
 
-            body = json.dumps({
-                "ts_ms": int(time.time() * 1000),
-                "aircraft": payload_aircraft,
-            }).encode()
+            body = json.dumps(
+                {
+                    "ts_ms": int(time.time() * 1000),
+                    "aircraft": payload_aircraft,
+                }
+            ).encode()
             req = urllib.request.Request(
-                url, data=body,
+                url,
+                data=body,
                 headers={
                     "Content-Type": "application/json",
                     **({"X-API-Key": _k} if (_k := os.environ.get("RADAR_API_KEY", "")) else {}),
@@ -913,16 +959,12 @@ async def _validate_against_server(
             server_aircraft = server_aircraft_data.get("aircraft", [])
 
             try:
-                analytics = await loop.run_in_executor(
-                    None, _get_json, f"{base_url}/api/radar/analytics"
-                )
+                analytics = await loop.run_in_executor(None, _get_json, f"{base_url}/api/radar/analytics")
             except Exception:
                 analytics = {}
 
             try:
-                nodes_status = await loop.run_in_executor(
-                    None, _get_json, f"{base_url}/api/radar/nodes"
-                )
+                nodes_status = await loop.run_in_executor(None, _get_json, f"{base_url}/api/radar/nodes")
             except Exception:
                 nodes_status = {}
 
@@ -931,8 +973,7 @@ async def _validate_against_server(
             truth_aircraft = truth["aircraft"]
 
             log.info(
-                "VALIDATION: server=%d aircraft, truth=%d aircraft, "
-                "server_nodes=%d connected, analytics_nodes=%d",
+                "VALIDATION: server=%d aircraft, truth=%d aircraft, server_nodes=%d connected, analytics_nodes=%d",
                 len(server_aircraft),
                 len(truth_aircraft),
                 nodes_status.get("connected", 0),
@@ -985,8 +1026,11 @@ async def main_async(args):
         log.info("No config file, generating %d nodes...", args.nodes)
         regions = [r.strip() for r in args.regions.split(",")]
         all_nodes = generate_fleet(
-            n_nodes=args.nodes, regions=regions, seed=args.seed,
-            n_cluster=args.n_cluster, n_clusters=args.n_clusters,
+            n_nodes=args.nodes,
+            regions=regions,
+            seed=args.seed,
+            n_cluster=args.n_cluster,
+            n_clusters=args.n_clusters,
         )
         cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters)
 
@@ -994,6 +1038,7 @@ async def main_async(args):
     if getattr(args, "metros", "") and args.metros:
         metro_areas = _parse_metro_areas(args.metros)
         if metro_areas:
+
             def _near_any_metro(node):
                 for m in metro_areas:
                     dlat = abs(node["rx_lat"] - m["lat"])
@@ -1001,10 +1046,10 @@ async def main_async(args):
                     if dlat < 2.0 and dlon < 2.0:  # ~200km box
                         return True
                 return False
+
             before = len(all_nodes)
             all_nodes = [n for n in all_nodes if _near_any_metro(n)]
-            log.info("Metro filter (%s): %d → %d nodes",
-                     args.metros, before, len(all_nodes))
+            log.info("Metro filter (%s): %d → %d nodes", args.metros, before, len(all_nodes))
 
     # Resolve real TX towers for each node (skip for non-US regions — FCC-only).
     # Coverage-ring receivers keep their shared illuminator: resolving per-RX
@@ -1012,21 +1057,19 @@ async def main_async(args):
     # association invariant and the metro-cell grouping.
     if getattr(args, "use_real_towers", False):
         log.info("Resolving real TX towers via FCC API (cached)…")
-        resolvable = [n for n in all_nodes
-                      if not str(n.get("node_id", "")).startswith("synth-RING")]
+        resolvable = [n for n in all_nodes if not str(n.get("node_id", "")).startswith("synth-RING")]
         assignments = resolve_towers(resolvable)
         updated = apply_tower_assignments(resolvable, assignments)
         log.info("Real tower assignments applied to %d / %d nodes.", updated, len(resolvable))
 
     # Limit to requested number
     if args.nodes and args.nodes < len(all_nodes):
-        all_nodes = all_nodes[:args.nodes]
+        all_nodes = all_nodes[: args.nodes]
 
     # Keep only cells whose ring survived node filtering (e.g. --metros / --nodes)
     if cells:
         node_ids = [n["node_id"] for n in all_nodes]
-        cells = [c for c in cells
-                 if any(nid.startswith(c["ring_id"]) for nid in node_ids)]
+        cells = [c for c in cells if any(nid.startswith(c["ring_id"]) for nid in node_ids)]
 
     log.info("Fleet: %d nodes, %d metro cells", len(all_nodes), len(cells))
     summary = fleet_summary(all_nodes)
@@ -1074,36 +1117,56 @@ async def main_async(args):
     # Always push per-aircraft ADS-B positions every second so every aircraft
     # has a fresh position in state.adsb_aircraft regardless of node visibility.
     if args.validation_url:
-        tasks.append(_push_adsb_live(
-            orchestrator, args.validation_url, interval_s=1.0,
-        ))
+        tasks.append(
+            _push_adsb_live(
+                orchestrator,
+                args.validation_url,
+                interval_s=1.0,
+            )
+        )
 
     # Always push ground truth when we have a validation_url — needed for
     # anomaly detection and the frontend map overlay, not just validation.
     if args.validation_url:
-        tasks.append(_push_ground_truth_live(
-            orchestrator, args.validation_url, interval_s=2.0,
-        ))
+        tasks.append(
+            _push_ground_truth_live(
+                orchestrator,
+                args.validation_url,
+                interval_s=2.0,
+            )
+        )
 
     # Poll server for updated simulation physics fractions (set from frontend UI).
     if args.validation_url:
-        tasks.append(_poll_simulation_config(
-            orchestrator, args.validation_url, interval_s=5.0,
-        ))
+        tasks.append(
+            _poll_simulation_config(
+                orchestrator,
+                args.validation_url,
+                interval_s=5.0,
+            )
+        )
 
     # Real ADS-B from adsb.lol — inject real air traffic when metro areas are configured.
     if args.validation_url and hasattr(args, "metros") and args.metros:
         metro_areas = _parse_metro_areas(args.metros)
         if metro_areas:
-            tasks.append(_push_real_adsb(
-                orchestrator, args.validation_url,
-                areas=metro_areas, interval_s=10.0,
-            ))
+            tasks.append(
+                _push_real_adsb(
+                    orchestrator,
+                    args.validation_url,
+                    areas=metro_areas,
+                    interval_s=10.0,
+                )
+            )
 
     if args.validate and args.validation_url:
-        tasks.append(_validate_against_server(
-            orchestrator, args.validation_url, interval_s=30.0,
-        ))
+        tasks.append(
+            _validate_against_server(
+                orchestrator,
+                args.validation_url,
+                interval_s=30.0,
+            )
+        )
 
     try:
         await asyncio.gather(*tasks)
@@ -1124,66 +1187,84 @@ async def main_async(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Fleet Orchestrator — run 100-1000 synthetic nodes"
+    parser = argparse.ArgumentParser(description="Fleet Orchestrator — run 100-1000 synthetic nodes")
+    parser.add_argument("--config", type=str, default="fleet_config.json", help="Path to fleet_config.json")
+    parser.add_argument("--nodes", type=int, default=0, help="Number of nodes to use (0 = all from config)")
+    parser.add_argument("--regions", type=str, default="us", help="Regions for auto-generation: us,eu,au")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for fleet generation")
+    parser.add_argument(
+        "--n-cluster",
+        "--n-ring",
+        dest="n_cluster",
+        type=int,
+        default=30,
+        help="Total metro-ring receiver budget, split across --n-clusters "
+        "rings (only used when auto-generating, i.e. no --config). "
+        "Matches the generator default.",
     )
-    parser.add_argument("--config", type=str, default="fleet_config.json",
-                        help="Path to fleet_config.json")
-    parser.add_argument("--nodes", type=int, default=0,
-                        help="Number of nodes to use (0 = all from config)")
-    parser.add_argument("--regions", type=str, default="us",
-                        help="Regions for auto-generation: us,eu,au")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for fleet generation")
-    parser.add_argument("--n-cluster", "--n-ring", dest="n_cluster", type=int, default=30,
-                        help="Total metro-ring receiver budget, split across --n-clusters "
-                             "rings (only used when auto-generating, i.e. no --config). "
-                             "Matches the generator default.")
-    parser.add_argument("--n-clusters", "--n-rings", dest="n_clusters", type=int, default=5,
-                        help="Number of distinct metro rings to fan the --n-cluster budget "
-                             "across (5 = Dallas, Chicago, Atlanta, Denver, Kansas City; "
-                             "1 = single Dallas ring). Matches the generator default.")
-    parser.add_argument("--host", type=str, default="localhost",
-                        help="Server hostname")
-    parser.add_argument("--port", type=int, default=3012,
-                        help="Server TCP port")
-    parser.add_argument("--mode", type=str, default="adsb",
-                        choices=["detection", "adsb", "anomalous"],
-                        help="Detection mode")
-    parser.add_argument("--interval", type=float, default=0.5,
-                        help="Frame interval in seconds")
-    parser.add_argument("--time-scale", type=float, default=1.0,
-                        help="Simulation speed multiplier (for demo visibility)")
-    parser.add_argument("--duration", type=float, default=0,
-                        help="Run duration in seconds (0 = infinite)")
-    parser.add_argument("--min-aircraft", type=int, default=0,
-                        help="Minimum aircraft to keep alive (0 = auto demo default)")
-    parser.add_argument("--max-aircraft", type=int, default=0,
-                        help="Maximum aircraft in world (0 = auto demo default)")
-    parser.add_argument("--beam-width-deg", type=float, default=0,
-                        help="Override node beam width for demo visibility (0 = use config)")
-    parser.add_argument("--max-range-km", type=float, default=0,
-                        help="Override node max range for demo visibility (0 = use config)")
-    parser.add_argument("--concurrency", type=int, default=50,
-                        help="Max concurrent TCP connections during setup")
-    parser.add_argument("--connect-retries", type=int, default=3,
-                        help="How many retry rounds to use for failed handshakes")
-    parser.add_argument("--use-real-towers", action="store_true",
-                        help="Resolve real TX towers via FCC API (persistent cache; US only)")
-    parser.add_argument("--validate", action="store_true",
-                        help="Enable validation against server API")
-    parser.add_argument("--validation-url", type=str, default="http://localhost:8000",
-                        help="Base URL for validation API calls")
-    parser.add_argument("--ground-truth-path", type=str, default="ground_truth.json",
-                        help="Path to save ground truth data")
-    parser.add_argument("--metros", type=str, default="",
-                        help="Comma-separated metro codes to focus on (e.g. atl,gvl). "
-                             "Filters fleet to these metros and injects real ADS-B from adsb.lol. "
-                             f"Available: {','.join(_KNOWN_METROS.keys())}")
-    parser.add_argument("--no-hub-radial", action="store_true",
-                        help="Disable hub-radial flight planning (use legacy random-anchor spawn)")
-    parser.add_argument("--metro-traffic-frac", type=float, default=0.6,
-                        help="Fraction of spawns routed through metro coverage rings (rest en-route)")
+    parser.add_argument(
+        "--n-clusters",
+        "--n-rings",
+        dest="n_clusters",
+        type=int,
+        default=5,
+        help="Number of distinct metro rings to fan the --n-cluster budget "
+        "across (5 = Dallas, Chicago, Atlanta, Denver, Kansas City; "
+        "1 = single Dallas ring). Matches the generator default.",
+    )
+    parser.add_argument("--host", type=str, default="localhost", help="Server hostname")
+    parser.add_argument("--port", type=int, default=3012, help="Server TCP port")
+    parser.add_argument(
+        "--mode", type=str, default="adsb", choices=["detection", "adsb", "anomalous"], help="Detection mode"
+    )
+    parser.add_argument("--interval", type=float, default=0.5, help="Frame interval in seconds")
+    parser.add_argument(
+        "--time-scale", type=float, default=1.0, help="Simulation speed multiplier (for demo visibility)"
+    )
+    parser.add_argument("--duration", type=float, default=0, help="Run duration in seconds (0 = infinite)")
+    parser.add_argument(
+        "--min-aircraft", type=int, default=0, help="Minimum aircraft to keep alive (0 = auto demo default)"
+    )
+    parser.add_argument("--max-aircraft", type=int, default=0, help="Maximum aircraft in world (0 = auto demo default)")
+    parser.add_argument(
+        "--beam-width-deg", type=float, default=0, help="Override node beam width for demo visibility (0 = use config)"
+    )
+    parser.add_argument(
+        "--max-range-km", type=float, default=0, help="Override node max range for demo visibility (0 = use config)"
+    )
+    parser.add_argument("--concurrency", type=int, default=50, help="Max concurrent TCP connections during setup")
+    parser.add_argument(
+        "--connect-retries", type=int, default=3, help="How many retry rounds to use for failed handshakes"
+    )
+    parser.add_argument(
+        "--use-real-towers", action="store_true", help="Resolve real TX towers via FCC API (persistent cache; US only)"
+    )
+    parser.add_argument("--validate", action="store_true", help="Enable validation against server API")
+    parser.add_argument(
+        "--validation-url", type=str, default="http://localhost:8000", help="Base URL for validation API calls"
+    )
+    parser.add_argument(
+        "--ground-truth-path", type=str, default="ground_truth.json", help="Path to save ground truth data"
+    )
+    parser.add_argument(
+        "--metros",
+        type=str,
+        default="",
+        help="Comma-separated metro codes to focus on (e.g. atl,gvl). "
+        "Filters fleet to these metros and injects real ADS-B from adsb.lol. "
+        f"Available: {','.join(_KNOWN_METROS.keys())}",
+    )
+    parser.add_argument(
+        "--no-hub-radial",
+        action="store_true",
+        help="Disable hub-radial flight planning (use legacy random-anchor spawn)",
+    )
+    parser.add_argument(
+        "--metro-traffic-frac",
+        type=float,
+        default=0.6,
+        help="Fraction of spawns routed through metro coverage rings (rest en-route)",
+    )
     args = parser.parse_args()
 
     asyncio.run(main_async(args))

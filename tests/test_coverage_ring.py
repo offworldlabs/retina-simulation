@@ -49,22 +49,19 @@ class TestRingShape:
             assert isinstance(node["beam_azimuth_deg"], float)
 
     def test_node_ids_use_prefix(self):
-        ids = [n["node_id"] for n in _generate_coverage_ring(
-            3, _CORE_LAT, _CORE_LON, _TX_TUPLE, prefix="synth-RING2")]
+        ids = [n["node_id"] for n in _generate_coverage_ring(3, _CORE_LAT, _CORE_LON, _TX_TUPLE, prefix="synth-RING2")]
         assert ids == ["synth-RING2-0001", "synth-RING2-0002", "synth-RING2-0003"]
 
 
 class TestRingAim:
     def test_core_aim_points_each_node_at_core(self):
         for node in _ring(n=8, aim="core"):
-            bearing_to_core = _bearing_between(
-                node["rx_lat"], node["rx_lon"], _CORE_LAT, _CORE_LON)
+            bearing_to_core = _bearing_between(node["rx_lat"], node["rx_lon"], _CORE_LAT, _CORE_LON)
             assert _angular_diff(node["beam_azimuth_deg"], bearing_to_core) < 1.0
 
     def test_broadside_aim_is_baseline_plus_ninety(self):
         for node in _ring(n=8, aim="broadside"):
-            expected = (_bearing_between(
-                node["rx_lat"], node["rx_lon"], _TX_LAT, _TX_LON) + 90.0) % 360.0
+            expected = (_bearing_between(node["rx_lat"], node["rx_lon"], _TX_LAT, _TX_LON) + 90.0) % 360.0
             assert node["beam_azimuth_deg"] == round(expected, 2)
 
 
@@ -73,23 +70,31 @@ class TestCoreInsideEveryBeam:
         nodes = _ring(n=6, aim="core")
         world = SimulationWorld()
         aircraft = SimulatedAircraft(
-            object_id="core-target", lat=_CORE_LAT, lon=_CORE_LON, alt_km=8.0,
-            vel_east=0.0, vel_north=0.0, vel_up=0.0,
-            heading_deg=0.0, speed_km_s=0.2,
+            object_id="core-target",
+            lat=_CORE_LAT,
+            lon=_CORE_LON,
+            alt_km=8.0,
+            vel_east=0.0,
+            vel_north=0.0,
+            vel_up=0.0,
+            heading_deg=0.0,
+            speed_km_s=0.2,
         )
         for node in nodes:
             cfg = NodeConfig(
                 node_id=node["node_id"],
-                rx_lat=node["rx_lat"], rx_lon=node["rx_lon"],
-                tx_lat=_TX_LAT, tx_lon=_TX_LON, fc_hz=_FC_HZ,
+                rx_lat=node["rx_lat"],
+                rx_lon=node["rx_lon"],
+                tx_lat=_TX_LAT,
+                tx_lon=_TX_LON,
+                fc_hz=_FC_HZ,
                 beam_azimuth_deg=node["beam_azimuth_deg"],
                 beam_width_deg=node["beam_width_deg"],
                 max_range_km=node["max_range_km"],
             )
             world.add_node(cfg)
             assert world._aircraft_in_detection_cone(aircraft, world.nodes[node["node_id"]]), (
-                f"core outside beam of {node['node_id']} "
-                f"(az={node['beam_azimuth_deg']})"
+                f"core outside beam of {node['node_id']} (az={node['beam_azimuth_deg']})"
             )
 
 
@@ -107,6 +112,5 @@ class TestRingWaterRejection:
         assert len(nodes) == 8
         for node in nodes:
             assert not generator._is_on_water(node["rx_lat"], node["rx_lon"]), (
-                f"{node['node_id']} placed on water at "
-                f"({node['rx_lat']}, {node['rx_lon']})"
+                f"{node['node_id']} placed on water at ({node['rx_lat']}, {node['rx_lon']})"
             )

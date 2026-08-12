@@ -45,10 +45,16 @@ class TestDefaults:
         assert metro[0].ops_weight == 1.0
 
     def test_explicit_keys_override_defaults(self):
-        metro = _cells_to_metrocells([{
-            "core_lat": 12.5, "core_lon": -34.5,
-            "radius_km": 42.0, "ops_weight": 9.0,
-        }])
+        metro = _cells_to_metrocells(
+            [
+                {
+                    "core_lat": 12.5,
+                    "core_lon": -34.5,
+                    "radius_km": 42.0,
+                    "ops_weight": 9.0,
+                }
+            ]
+        )
         assert metro[0].core_lat == 12.5
         assert metro[0].core_lon == -34.5
         assert metro[0].radius_km == 42.0
