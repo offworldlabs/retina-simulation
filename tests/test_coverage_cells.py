@@ -28,7 +28,11 @@ class TestCoverageCellsMultiRing:
     def test_ring_ids_are_numbered(self):
         cells = coverage_cells(30, 5)
         assert [c["ring_id"] for c in cells] == [
-            "synth-RING1", "synth-RING2", "synth-RING3", "synth-RING4", "synth-RING5",
+            "synth-RING1",
+            "synth-RING2",
+            "synth-RING3",
+            "synth-RING4",
+            "synth-RING5",
         ]
 
     def test_cores_come_from_spec_not_node_positions(self):
@@ -117,8 +121,11 @@ class TestActiveRingsConsistency:
 
     def test_generated_node_counts_match_cell_ops_weight(self):
         nodes = generate_fleet(
-            n_nodes=120, n_cluster=30, n_clusters=5,
-            use_tower_api=False, seed=7,
+            n_nodes=120,
+            n_cluster=30,
+            n_clusters=5,
+            use_tower_api=False,
+            seed=7,
         )
         cells = coverage_cells(30, 5)
         counts = Counter()

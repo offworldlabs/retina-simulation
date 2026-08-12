@@ -14,7 +14,11 @@ pytest.importorskip("shapely")
 
 def _fleet():
     return generate_fleet(
-        n_nodes=60, seed=42, use_tower_api=False, n_cluster=8, n_clusters=5,
+        n_nodes=60,
+        seed=42,
+        use_tower_api=False,
+        n_cluster=8,
+        n_clusters=5,
     )
 
 
@@ -29,9 +33,7 @@ class TestNodeDictWireContract:
         _, non_ring = _split(_fleet())
         assert non_ring
         for node in non_ring:
-            assert "beam_azimuth_deg" not in node, (
-                f"{node['node_id']} leaked a beam_azimuth_deg key"
-            )
+            assert "beam_azimuth_deg" not in node, f"{node['node_id']} leaked a beam_azimuth_deg key"
 
     def test_ring_nodes_carry_float_beam_azimuth(self):
         ring, _ = _split(_fleet())
@@ -50,15 +52,27 @@ class TestNodeDictWireContract:
 class TestNodeDictSerializer:
     def test_none_azimuth_dropped(self):
         node = GeneratedNodeConfig(
-            node_id="synth-US-0001", rx_lat=33.9, rx_lon=-84.6, rx_alt_ft=900,
-            tx_lat=33.7, tx_lon=-84.3, tx_alt_ft=1600, fc_hz=195e6,
+            node_id="synth-US-0001",
+            rx_lat=33.9,
+            rx_lon=-84.6,
+            rx_alt_ft=900,
+            tx_lat=33.7,
+            tx_lon=-84.3,
+            tx_alt_ft=1600,
+            fc_hz=195e6,
         )
         assert "beam_azimuth_deg" not in _node_dict(node)
 
     def test_explicit_azimuth_kept(self):
         node = GeneratedNodeConfig(
-            node_id="synth-RING-0001", rx_lat=33.9, rx_lon=-84.6, rx_alt_ft=900,
-            tx_lat=33.7, tx_lon=-84.3, tx_alt_ft=1600, fc_hz=195e6,
+            node_id="synth-RING-0001",
+            rx_lat=33.9,
+            rx_lon=-84.6,
+            rx_alt_ft=900,
+            tx_lat=33.7,
+            tx_lon=-84.3,
+            tx_alt_ft=1600,
+            fc_hz=195e6,
             beam_azimuth_deg=212.5,
         )
         assert _node_dict(node)["beam_azimuth_deg"] == 212.5

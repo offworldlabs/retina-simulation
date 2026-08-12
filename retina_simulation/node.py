@@ -55,6 +55,7 @@ CONFIG_ACK_TIMEOUT_S = 10
 @dataclass
 class NodeConfig:
     """Passive radar node configuration."""
+
     node_id: str = "synth-node-01"
     rx_lat: float = 33.939182
     rx_lon: float = -84.651910
@@ -79,6 +80,7 @@ def _config_hash(config: NodeConfig) -> str:
 @dataclass
 class SyntheticTarget:
     """A simulated moving target in ENU coordinates (km) relative to RX."""
+
     target_id: str
     # Position (ENU km)
     east: float
@@ -167,8 +169,12 @@ class SyntheticNodeGenerator:
         tx_alt_m = config.tx_alt_ft * 0.3048
         self.rx_enu = (0.0, 0.0, 0.0)
         self.tx_enu = _lla_to_enu(
-            config.tx_lat, config.tx_lon, tx_alt_m,
-            config.rx_lat, config.rx_lon, rx_alt_m,
+            config.tx_lat,
+            config.tx_lon,
+            tx_alt_m,
+            config.rx_lat,
+            config.rx_lon,
+            rx_alt_m,
         )
         self.rx_alt_m = rx_alt_m
 
@@ -239,9 +245,7 @@ class SyntheticNodeGenerator:
         vel = (target.vel_east, target.vel_north, target.vel_up)
 
         delay = _bistatic_delay(pos, self.tx_enu, self.rx_enu)
-        doppler = _bistatic_doppler(
-            pos, vel, self.tx_enu, self.rx_enu, self.config.fc_hz
-        )
+        doppler = _bistatic_doppler(pos, vel, self.tx_enu, self.rx_enu, self.config.fc_hz)
 
         # Add measurement noise
         delay += random.gauss(0, 0.1)  # ~0.1 μs noise (GPS-disciplined SDR)
@@ -268,8 +272,12 @@ class SyntheticNodeGenerator:
 
         # Convert ENU to LLA for ADS-B position
         lat, lon, alt_m = _enu_to_lla(
-            target.east, target.north, target.up,
-            self.config.rx_lat, self.config.rx_lon, self.rx_alt_m,
+            target.east,
+            target.north,
+            target.up,
+            self.config.rx_lat,
+            self.config.rx_lon,
+            self.rx_alt_m,
         )
 
         speed_ms = _norm([target.vel_east * 1000, target.vel_north * 1000, 0])
@@ -294,10 +302,7 @@ class SyntheticNodeGenerator:
 
         # Manage target lifecycle
         # Remove expired targets
-        self.targets = [
-            t for t in self.targets
-            if (now - t.created_at) < t.lifetime_s
-        ]
+        self.targets = [t for t in self.targets if (now - t.created_at) < t.lifetime_s]
 
         # Spawn new targets to maintain 3-8 active
         while len(self.targets) < 3:
@@ -318,14 +323,14 @@ class SyntheticNodeGenerator:
         # Add some clutter/noise detections (false alarms)
         n_clutter = random.randint(0, 5)
         for _ in range(n_clutter):
-            detections.append({
-                "delay": round(random.uniform(0, 60), 2),
-                "doppler": round(random.uniform(
-                    self.config.doppler_min, self.config.doppler_max
-                ), 2),
-                "snr": round(random.uniform(4, 7), 2),
-                "_target": None,
-            })
+            detections.append(
+                {
+                    "delay": round(random.uniform(0, 60), 2),
+                    "doppler": round(random.uniform(self.config.doppler_min, self.config.doppler_max), 2),
+                    "snr": round(random.uniform(4, 7), 2),
+                    "_target": None,
+                }
+            )
 
         # Build output frame
         delays = [d["delay"] for d in detections]
@@ -356,8 +361,8 @@ class SyntheticNodeGenerator:
 
 # ── TCP connection helpers ────────────────────────────────────────────────────
 
-def _connect_tcp(host: str, port: int, max_retries: int = 0,
-                 cloudflare_host: str | None = None) -> socket.socket:
+
+def _connect_tcp(host: str, port: int, max_retries: int = 0, cloudflare_host: str | None = None) -> socket.socket:
     """Connect to the tracker server via TCP with retry logic.
 
     If cloudflare_host is provided, the connection is made to the Cloudflare
@@ -382,10 +387,9 @@ def _connect_tcp(host: str, port: int, max_retries: int = 0,
             attempt += 1
             if 0 < max_retries <= attempt:
                 raise
-            wait = min(2 ** attempt, 30)
+            wait = min(2**attempt, 30)
             print(
-                f"Connection to {connect_host}:{port} failed ({exc}), "
-                f"retrying in {wait}s...",
+                f"Connection to {connect_host}:{port} failed ({exc}), retrying in {wait}s...",
                 file=sys.stderr,
             )
             time.sleep(wait)
@@ -416,8 +420,8 @@ def _recv_msg(sock: socket.socket, timeout: float = CONFIG_ACK_TIMEOUT_S) -> dic
 
 # ── Protocol handshake ────────────────────────────────────────────────────────
 
-def _perform_handshake(sock: socket.socket, config: NodeConfig,
-                       crypto_backend=None) -> bool:
+
+def _perform_handshake(sock: socket.socket, config: NodeConfig, crypto_backend=None) -> bool:
     """Perform the RETINA TCP handshake: HELLO → CONFIG → REGISTER_KEY → wait ACKs.
 
     If crypto_backend is provided, also registers the public key for
@@ -430,29 +434,35 @@ def _perform_handshake(sock: socket.socket, config: NodeConfig,
     is_synthetic = config.node_id.startswith("synth-") or config.node_id.startswith("syn-")
 
     # 1. Send HELLO with capabilities
-    _send_msg(sock, {
-        "type": "HELLO",
-        "node_id": config.node_id,
-        "version": RETINA_VERSION,
-        "is_synthetic": is_synthetic,
-        "capabilities": {
-            "detection": True,
-            "adsb_correlation": True,
-            "doppler": True,
-            "config_hash": True,
-            "heartbeat": True,
-            "chain_of_custody": crypto_backend is not None,
+    _send_msg(
+        sock,
+        {
+            "type": "HELLO",
+            "node_id": config.node_id,
+            "version": RETINA_VERSION,
+            "is_synthetic": is_synthetic,
+            "capabilities": {
+                "detection": True,
+                "adsb_correlation": True,
+                "doppler": True,
+                "config_hash": True,
+                "heartbeat": True,
+                "chain_of_custody": crypto_backend is not None,
+            },
         },
-    })
+    )
     print(f"  → HELLO (version={RETINA_VERSION}, synthetic={is_synthetic})", file=sys.stderr)
 
     # 2. Send CONFIG
-    _send_msg(sock, {
-        "type": "CONFIG",
-        "node_id": config.node_id,
-        "config_hash": cfg_hash,
-        "config": cfg_payload,
-    })
+    _send_msg(
+        sock,
+        {
+            "type": "CONFIG",
+            "node_id": config.node_id,
+            "config_hash": cfg_hash,
+            "config": cfg_payload,
+        },
+    )
     print(f"  → CONFIG (hash={cfg_hash})", file=sys.stderr)
 
     # 3. Wait for CONFIG_ACK
@@ -471,12 +481,15 @@ def _perform_handshake(sock: socket.socket, config: NodeConfig,
             print(f"  ← unexpected message: {ack.get('type', '?')}", file=sys.stderr)
         else:
             print(f"  ! CONFIG_ACK timeout (attempt {attempt + 1}/3), retransmitting CONFIG...", file=sys.stderr)
-            _send_msg(sock, {
-                "type": "CONFIG",
-                "node_id": config.node_id,
-                "config_hash": cfg_hash,
-                "config": cfg_payload,
-            })
+            _send_msg(
+                sock,
+                {
+                    "type": "CONFIG",
+                    "node_id": config.node_id,
+                    "config_hash": cfg_hash,
+                    "config": cfg_payload,
+                },
+            )
 
     if not config_acked:
         print("  ! Handshake failed after 3 attempts", file=sys.stderr)
@@ -484,14 +497,17 @@ def _perform_handshake(sock: socket.socket, config: NodeConfig,
 
     # 4. Register public key (chain of custody)
     if crypto_backend is not None:
-        _send_msg(sock, {
-            "type": "REGISTER_KEY",
-            "node_id": config.node_id,
-            "public_key_pem": crypto_backend.get_public_key_pem(),
-            "fingerprint": crypto_backend.get_public_key_fingerprint(),
-            "serial_number": crypto_backend.get_serial_number(),
-            "signing_mode": crypto_backend.signing_mode,
-        })
+        _send_msg(
+            sock,
+            {
+                "type": "REGISTER_KEY",
+                "node_id": config.node_id,
+                "public_key_pem": crypto_backend.get_public_key_pem(),
+                "fingerprint": crypto_backend.get_public_key_fingerprint(),
+                "serial_number": crypto_backend.get_serial_number(),
+                "signing_mode": crypto_backend.signing_mode,
+            },
+        )
         print(f"  → REGISTER_KEY (fp={crypto_backend.get_public_key_fingerprint()[:12]}...)", file=sys.stderr)
         # Wait for KEY_ACK (non-blocking — best effort)
         key_ack = _recv_msg(sock, timeout=5)
@@ -505,23 +521,28 @@ def _perform_handshake(sock: socket.socket, config: NodeConfig,
 
 # ── Heartbeat thread ──────────────────────────────────────────────────────────
 
+
 def _heartbeat_loop(sock: socket.socket, config: NodeConfig, stop_event: threading.Event):
     """Send periodic heartbeats on a background thread."""
     cfg_hash = _config_hash(config)
     while not stop_event.wait(HEARTBEAT_INTERVAL_S):
         try:
-            _send_msg(sock, {
-                "type": "HEARTBEAT",
-                "node_id": config.node_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "config_hash": cfg_hash,
-                "status": "active",
-            })
+            _send_msg(
+                sock,
+                {
+                    "type": "HEARTBEAT",
+                    "node_id": config.node_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "config_hash": cfg_hash,
+                    "status": "active",
+                },
+            )
         except (BrokenPipeError, ConnectionResetError, OSError):
             break  # main loop will handle reconnection
 
 
 # ── Server message listener ──────────────────────────────────────────────────
+
 
 def _listener_loop(sock: socket.socket, config: NodeConfig, stop_event: threading.Event):
     """Listen for server messages (CONFIG_REQUEST, etc.) on a background thread."""
@@ -542,12 +563,15 @@ def _listener_loop(sock: socket.socket, config: NodeConfig, stop_event: threadin
                 if msg.get("type") == "CONFIG_REQUEST":
                     print("\n  ← CONFIG_REQUEST — resending config", file=sys.stderr)
                     try:
-                        _send_msg(sock, {
-                            "type": "CONFIG",
-                            "node_id": config.node_id,
-                            "config_hash": _config_hash(config),
-                            "config": asdict(config),
-                        })
+                        _send_msg(
+                            sock,
+                            {
+                                "type": "CONFIG",
+                                "node_id": config.node_id,
+                                "config_hash": _config_hash(config),
+                                "config": asdict(config),
+                            },
+                        )
                     except (BrokenPipeError, ConnectionResetError, OSError):
                         break
         except TimeoutError:
@@ -558,8 +582,10 @@ def _listener_loop(sock: socket.socket, config: NodeConfig, stop_event: threadin
 
 # ── Streaming modes ───────────────────────────────────────────────────────────
 
-def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
-                interval_ms: int = 500, cloudflare_host: str | None = None):
+
+def _stream_tcp(
+    generator: SyntheticNodeGenerator, host: str, port: int, interval_ms: int = 500, cloudflare_host: str | None = None
+):
     """Stream detection frames to the tracker server over TCP with full protocol.
 
     Includes chain of custody: signing, hash chain, TSA timestamping.
@@ -582,7 +608,10 @@ def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
     iq_buffer = IQCircularBuffer(is_synthetic=True)
     iq_buffer.start()
 
-    print(f"  Chain of custody: key_fp={crypto.get_public_key_fingerprint()[:12]}... serial={crypto.get_serial_number()}", file=sys.stderr)
+    print(
+        f"  Chain of custody: key_fp={crypto.get_public_key_fingerprint()[:12]}... serial={crypto.get_serial_number()}",
+        file=sys.stderr,
+    )
 
     while True:
         sock = _connect_tcp(host, port, cloudflare_host=cloudflare_host)
@@ -596,12 +625,8 @@ def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
 
         # Start heartbeat and listener threads
         stop_event = threading.Event()
-        hb_thread = threading.Thread(
-            target=_heartbeat_loop, args=(sock, config, stop_event), daemon=True
-        )
-        listener_thread = threading.Thread(
-            target=_listener_loop, args=(sock, config, stop_event), daemon=True
-        )
+        hb_thread = threading.Thread(target=_heartbeat_loop, args=(sock, config, stop_event), daemon=True)
+        listener_thread = threading.Thread(target=_listener_loop, args=(sock, config, stop_event), daemon=True)
         hb_thread.start()
         listener_thread.start()
 
@@ -643,27 +668,29 @@ def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
                             entry.ots_proof = ots_proof
                         # Submit chain entry to server
                         try:
-                            _send_msg(sock, {
-                                "type": "CHAIN_ENTRY",
-                                "node_id": config.node_id,
-                                "entry": entry.to_dict(),
-                            })
+                            _send_msg(
+                                sock,
+                                {
+                                    "type": "CHAIN_ENTRY",
+                                    "node_id": config.node_id,
+                                    "entry": entry.to_dict(),
+                                },
+                            )
                             print(f"\n  → CHAIN_ENTRY (hour={entry.hour_utc}, n={entry.n_detections})", file=sys.stderr)
                         except (BrokenPipeError, ConnectionResetError, OSError):
                             pass
 
                 # Print summary to stderr
                 n_det = len(frame["delay"])
-                n_adsb = sum(
-                    1 for a in frame.get("adsb", []) if a is not None
-                ) if "adsb" in frame else 0
+                n_adsb = sum(1 for a in frame.get("adsb", []) if a is not None) if "adsb" in frame else 0
                 print(
                     f"\r[{time.strftime('%H:%M:%S')}] "
                     f"Sent signed DETECTION: {n_det} detections"
                     f"{f', {n_adsb} with ADS-B' if n_adsb else ''}"
                     f" | targets: {len(generator.targets)}"
                     f" | chain: {chain_builder.pending_detections} pending",
-                    end="", file=sys.stderr,
+                    end="",
+                    file=sys.stderr,
                 )
 
                 time.sleep(interval_ms / 1000.0)
@@ -686,8 +713,7 @@ def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
         time.sleep(2)
 
 
-def _stream_http(generator: SyntheticNodeGenerator, url: str,
-                 interval_ms: int = 500, batch_size: int = 10):
+def _stream_http(generator: SyntheticNodeGenerator, url: str, interval_ms: int = 500, batch_size: int = 10):
     """Stream detection frames to the server over HTTP POST."""
     import urllib.request
 
@@ -714,7 +740,8 @@ def _stream_http(generator: SyntheticNodeGenerator, url: str,
                         f"\r[{time.strftime('%H:%M:%S')}] "
                         f"Sent {len(frames_buffer)} frames → "
                         f"{result.get('tracks', '?')} tracks",
-                        end="", file=sys.stderr,
+                        end="",
+                        file=sys.stderr,
                     )
                 except Exception as exc:
                     print(f"\nHTTP POST failed: {exc}", file=sys.stderr)
@@ -726,8 +753,9 @@ def _stream_http(generator: SyntheticNodeGenerator, url: str,
         print("\nStopping synthetic node.", file=sys.stderr)
 
 
-def _replay_file(filepath: str, host: str, port: int, config: NodeConfig,
-                 speed: float = 1.0, cloudflare_host: str | None = None):
+def _replay_file(
+    filepath: str, host: str, port: int, config: NodeConfig, speed: float = 1.0, cloudflare_host: str | None = None
+):
     """Replay a .detection file over TCP with full protocol."""
     with open(filepath) as f:
         content = f.read().strip()
@@ -749,9 +777,7 @@ def _replay_file(filepath: str, host: str, port: int, config: NodeConfig,
 
     # Start heartbeat thread
     stop_event = threading.Event()
-    hb_thread = threading.Thread(
-        target=_heartbeat_loop, args=(sock, config, stop_event), daemon=True
-    )
+    hb_thread = threading.Thread(target=_heartbeat_loop, args=(sock, config, stop_event), daemon=True)
     hb_thread.start()
 
     try:
@@ -783,9 +809,9 @@ def _replay_file(filepath: str, host: str, port: int, config: NodeConfig,
 
             n_det = len(frame.get("delay", []))
             print(
-                f"\r[{i+1}/{len(frames)}] "
-                f"Replayed frame: {n_det} detections",
-                end="", file=sys.stderr,
+                f"\r[{i + 1}/{len(frames)}] Replayed frame: {n_det} detections",
+                end="",
+                file=sys.stderr,
             )
 
         print(f"\nReplayed {len(frames)} frames.", file=sys.stderr)
@@ -797,9 +823,14 @@ def _replay_file(filepath: str, host: str, port: int, config: NodeConfig,
         sock.close()
 
 
-def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
-                           mode: str = "detection", interval_ms: int = 500,
-                           cloudflare_host: str | None = None):
+def _stream_multi_node_tcp(
+    nodes_config_path: str,
+    host: str,
+    port: int,
+    mode: str = "detection",
+    interval_ms: int = 500,
+    cloudflare_host: str | None = None,
+):
     """Run multiple synthetic nodes from a shared simulation world.
 
     Each node gets its own TCP connection, protocol handshake, and
@@ -829,7 +860,7 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
 
     for nd in nodes_data:
         wc = WorldNodeConfig(
-            node_id=nd.get("node_id", f"synth-node-{len(node_configs)+1:02d}"),
+            node_id=nd.get("node_id", f"synth-node-{len(node_configs) + 1:02d}"),
             rx_lat=nd.get("rx_lat", 33.939182),
             rx_lon=nd.get("rx_lon", -84.651910),
             rx_alt_ft=nd.get("rx_alt_ft", 950.0),
@@ -863,9 +894,14 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
     for wc in node_configs:
         local_cfg = NodeConfig(
             node_id=wc.node_id,
-            rx_lat=wc.rx_lat, rx_lon=wc.rx_lon, rx_alt_ft=wc.rx_alt_ft,
-            tx_lat=wc.tx_lat, tx_lon=wc.tx_lon, tx_alt_ft=wc.tx_alt_ft,
-            fc_hz=wc.fc_hz, fs_hz=wc.fs_hz,
+            rx_lat=wc.rx_lat,
+            rx_lon=wc.rx_lon,
+            rx_alt_ft=wc.rx_alt_ft,
+            tx_lat=wc.tx_lat,
+            tx_lon=wc.tx_lon,
+            tx_alt_ft=wc.tx_alt_ft,
+            fc_hz=wc.fc_hz,
+            fs_hz=wc.fs_hz,
         )
         node_local_configs[wc.node_id] = local_cfg
 
@@ -892,7 +928,8 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
     stop_event = threading.Event()
     for nid, sock in node_sockets.items():
         t = threading.Thread(
-            target=_heartbeat_loop, args=(sock, node_local_configs[nid], stop_event),
+            target=_heartbeat_loop,
+            args=(sock, node_local_configs[nid], stop_event),
             daemon=True,
         )
         t.start()
@@ -975,7 +1012,8 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
                 f"\r[{time.strftime('%H:%M:%S')}] "
                 f"aircraft={n_aircraft} (adsb={n_adsb} anom={n_anom}) "
                 f"nodes={len(node_sockets)} det_total={total_det}",
-                end="", file=sys.stderr,
+                end="",
+                file=sys.stderr,
             )
 
             if not node_sockets:
@@ -1000,24 +1038,28 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Synthetic node for Retina passive radar network"
-    )
+    parser = argparse.ArgumentParser(description="Synthetic node for Retina passive radar network")
     parser.add_argument(
-        "--host", default="localhost",
+        "--host",
+        default="localhost",
         help="Tracker server host (default: localhost)",
     )
     parser.add_argument(
-        "--port", type=int, default=3012,
+        "--port",
+        type=int,
+        default=3012,
         help="Tracker server TCP port (default: 3012)",
     )
     parser.add_argument(
-        "--mode", choices=["detection", "adsb", "anomalous"],
+        "--mode",
+        choices=["detection", "adsb", "anomalous"],
         default="detection",
         help="Data mode: detection-only, with ADS-B, or with anomalous objects",
     )
     parser.add_argument(
-        "--interval", type=int, default=500,
+        "--interval",
+        type=int,
+        default=500,
         help="Interval between frames in ms (default: 500)",
     )
     parser.add_argument(
@@ -1025,7 +1067,9 @@ def main():
         help="Replay a .detection file instead of generating synthetic data",
     )
     parser.add_argument(
-        "--speed", type=float, default=1.0,
+        "--speed",
+        type=float,
+        default=1.0,
         help="Replay speed multiplier (default: 1.0)",
     )
     parser.add_argument(
@@ -1035,7 +1079,7 @@ def main():
     parser.add_argument(
         "--cloudflare-host",
         help="Route TCP through Cloudflare frontend (e.g. hub.re) so the "
-             "server sees the node as a real internet client",
+        "server sees the node as a real internet client",
     )
     parser.add_argument(
         "--config",
@@ -1050,11 +1094,14 @@ def main():
         help="Export ML training data to this NDJSON file path (no server needed)",
     )
     parser.add_argument(
-        "--export-frames", type=int, default=10000,
+        "--export-frames",
+        type=int,
+        default=10000,
         help="Number of frames to export (default: 10000)",
     )
     parser.add_argument(
-        "--node-id", default="synth-node-01",
+        "--node-id",
+        default="synth-node-01",
         help="Node identifier — 'synth-' prefix marks synthetic nodes (default: synth-node-01)",
     )
     # Node geometry overrides
@@ -1092,16 +1139,14 @@ def main():
     print(f"  Mode: {args.mode}", file=sys.stderr)
     print(f"  Config hash: {cfg_hash}", file=sys.stderr)
     print(
-        f"  RX: ({node_config.rx_lat:.6f}, {node_config.rx_lon:.6f}) "
-        f"@ {node_config.rx_alt_ft:.0f} ft",
+        f"  RX: ({node_config.rx_lat:.6f}, {node_config.rx_lon:.6f}) @ {node_config.rx_alt_ft:.0f} ft",
         file=sys.stderr,
     )
     print(
-        f"  TX: ({node_config.tx_lat:.6f}, {node_config.tx_lon:.6f}) "
-        f"@ {node_config.tx_alt_ft:.0f} ft",
+        f"  TX: ({node_config.tx_lat:.6f}, {node_config.tx_lon:.6f}) @ {node_config.tx_alt_ft:.0f} ft",
         file=sys.stderr,
     )
-    print(f"  FC: {node_config.fc_hz/1e6:.1f} MHz", file=sys.stderr)
+    print(f"  FC: {node_config.fc_hz / 1e6:.1f} MHz", file=sys.stderr)
 
     cf_host = args.cloudflare_host
     if cf_host:
@@ -1111,8 +1156,11 @@ def main():
     if args.nodes_config:
         print(f"  Multi-node config: {args.nodes_config}", file=sys.stderr)
         _stream_multi_node_tcp(
-            args.nodes_config, args.host, args.port,
-            mode=args.mode, interval_ms=args.interval,
+            args.nodes_config,
+            args.host,
+            args.port,
+            mode=args.mode,
+            interval_ms=args.interval,
             cloudflare_host=cf_host,
         )
         return
@@ -1120,8 +1168,7 @@ def main():
     # ── Single-node modes ──────────────────────────────────────────
     if args.file:
         print(f"  Replaying: {args.file} @ {args.speed}x speed", file=sys.stderr)
-        _replay_file(args.file, args.host, args.port, node_config, args.speed,
-                     cloudflare_host=cf_host)
+        _replay_file(args.file, args.host, args.port, node_config, args.speed, cloudflare_host=cf_host)
     else:
         generator = SyntheticNodeGenerator(node_config, mode=args.mode)
 
@@ -1133,8 +1180,7 @@ def main():
                 f"  Streaming to: {args.host}:{args.port} (TCP)",
                 file=sys.stderr,
             )
-            _stream_tcp(generator, args.host, args.port, args.interval,
-                        cloudflare_host=cf_host)
+            _stream_tcp(generator, args.host, args.port, args.interval, cloudflare_host=cf_host)
 
 
 if __name__ == "__main__":

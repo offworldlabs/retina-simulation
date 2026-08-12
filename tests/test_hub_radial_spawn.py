@@ -21,8 +21,7 @@ _CORE_LAT, _CORE_LON = 32.8968, -97.0380
 def _world_with_cell(radius_km=70.0):
     world = SimulationWorld()
     world.add_node(NodeConfig(node_id="anchor"))
-    world.metro_cells = [MetroCell(
-        core_lat=_CORE_LAT, core_lon=_CORE_LON, radius_km=radius_km)]
+    world.metro_cells = [MetroCell(core_lat=_CORE_LAT, core_lon=_CORE_LON, radius_km=radius_km)]
     world.frac_metro_traffic = 1.0
     return world
 
@@ -44,8 +43,7 @@ class TestRadialRoutes:
         cell = world.metro_cells[0]
         for _ in range(200):
             _, _, route = world._radial_pose(cell, "arrival")
-            end_to_core = _haversine_km(
-                route[-1][0], route[-1][1], _CORE_LAT, _CORE_LON)
+            end_to_core = _haversine_km(route[-1][0], route[-1][1], _CORE_LAT, _CORE_LON)
             assert end_to_core < 12.0
 
     def test_departures_start_at_core(self):
@@ -54,8 +52,7 @@ class TestRadialRoutes:
         cell = world.metro_cells[0]
         for _ in range(200):
             _, _, route = world._radial_pose(cell, "departure")
-            start_to_core = _haversine_km(
-                route[0][0], route[0][1], _CORE_LAT, _CORE_LON)
+            start_to_core = _haversine_km(route[0][0], route[0][1], _CORE_LAT, _CORE_LON)
             assert start_to_core < 12.0
 
     def test_overflights_cross_the_cell_edge_to_edge(self):

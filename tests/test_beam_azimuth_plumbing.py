@@ -25,23 +25,30 @@ def _broadside_azimuth():
 def _aircraft_at_bearing(bearing_deg, dist_km=20.0):
     br = math.radians(bearing_deg)
     lat = _RX_LAT + math.degrees((dist_km * math.cos(br)) / 6371.0)
-    lon = _RX_LON + math.degrees(
-        (dist_km * math.sin(br)) / (6371.0 * math.cos(math.radians(_RX_LAT)))
-    )
+    lon = _RX_LON + math.degrees((dist_km * math.sin(br)) / (6371.0 * math.cos(math.radians(_RX_LAT))))
     return SimulatedAircraft(
-        object_id="probe", lat=lat, lon=lon, alt_km=8.0,
-        vel_east=0.0, vel_north=0.0, vel_up=0.0,
-        heading_deg=0.0, speed_km_s=0.2,
+        object_id="probe",
+        lat=lat,
+        lon=lon,
+        alt_km=8.0,
+        vel_east=0.0,
+        vel_north=0.0,
+        vel_up=0.0,
+        heading_deg=0.0,
+        speed_km_s=0.2,
     )
 
 
 def _node(beam_azimuth_deg, beam_width_deg=41.0):
     return NodeConfig(
         node_id="plumb-node",
-        rx_lat=_RX_LAT, rx_lon=_RX_LON,
-        tx_lat=_TX_LAT, tx_lon=_TX_LON,
+        rx_lat=_RX_LAT,
+        rx_lon=_RX_LON,
+        tx_lat=_TX_LAT,
+        tx_lon=_TX_LON,
         beam_azimuth_deg=beam_azimuth_deg,
-        beam_width_deg=beam_width_deg, max_range_km=50.0,
+        beam_width_deg=beam_width_deg,
+        max_range_km=50.0,
     )
 
 

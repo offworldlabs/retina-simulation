@@ -27,42 +27,42 @@ import random
 from dataclasses import asdict, dataclass, field
 
 C_KM_US = 0.299792458  # speed of light km/μs
-C_KM_S = 299792.458    # speed of light km/s
-R_EARTH = 6371.0        # Earth radius km
+C_KM_S = 299792.458  # speed of light km/s
+R_EARTH = 6371.0  # Earth radius km
 
 # ── US flight corridor waypoints (major airports / airways) ──────────────────
 _US_WAYPOINTS = [
     # East coast
-    (33.6407, -84.4277),   # ATL Atlanta
-    (35.2144, -80.9473),   # CLT Charlotte
-    (35.8776, -78.7875),   # RDU Raleigh
-    (36.0984, -79.9372),   # GSO Greensboro
-    (37.5054, -77.3197),   # RIC Richmond
-    (38.8512, -77.0402),   # DCA Washington
-    (39.1776, -76.6683),   # BWI Baltimore
-    (39.8744, -75.2424),   # PHL Philadelphia
-    (40.6413, -73.7781),   # JFK New York
-    (42.3656, -71.0096),   # BOS Boston
+    (33.6407, -84.4277),  # ATL Atlanta
+    (35.2144, -80.9473),  # CLT Charlotte
+    (35.8776, -78.7875),  # RDU Raleigh
+    (36.0984, -79.9372),  # GSO Greensboro
+    (37.5054, -77.3197),  # RIC Richmond
+    (38.8512, -77.0402),  # DCA Washington
+    (39.1776, -76.6683),  # BWI Baltimore
+    (39.8744, -75.2424),  # PHL Philadelphia
+    (40.6413, -73.7781),  # JFK New York
+    (42.3656, -71.0096),  # BOS Boston
     # Southeast
-    (32.1271, -81.2020),   # SAV Savannah
-    (28.4312, -81.3081),   # MCO Orlando
-    (25.7959, -80.2870),   # MIA Miami
-    (30.4941, -81.6879),   # JAX Jacksonville
-    (27.9755, -82.5332),   # TPA Tampa
+    (32.1271, -81.2020),  # SAV Savannah
+    (28.4312, -81.3081),  # MCO Orlando
+    (25.7959, -80.2870),  # MIA Miami
+    (30.4941, -81.6879),  # JAX Jacksonville
+    (27.9755, -82.5332),  # TPA Tampa
     # Central
-    (36.1245, -86.6782),   # BNA Nashville
-    (38.1744, -85.7360),   # SDF Louisville
-    (39.0489, -84.6678),   # CVG Cincinnati
-    (41.4117, -81.8498),   # CLE Cleveland
-    (42.2125, -83.3534),   # DTW Detroit
-    (41.9742, -87.9073),   # ORD Chicago
-    (44.8848, -93.2223),   # MSP Minneapolis
-    (38.7487, -90.3700),   # STL St Louis
-    (39.2976, -94.7139),   # MCI Kansas City
-    (29.9934, -90.2580),   # MSY New Orleans
-    (29.6454, -95.2789),   # IAH Houston
-    (32.8968, -97.0380),   # DFW Dallas
-    (35.3926, -97.6007),   # OKC Oklahoma City
+    (36.1245, -86.6782),  # BNA Nashville
+    (38.1744, -85.7360),  # SDF Louisville
+    (39.0489, -84.6678),  # CVG Cincinnati
+    (41.4117, -81.8498),  # CLE Cleveland
+    (42.2125, -83.3534),  # DTW Detroit
+    (41.9742, -87.9073),  # ORD Chicago
+    (44.8848, -93.2223),  # MSP Minneapolis
+    (38.7487, -90.3700),  # STL St Louis
+    (39.2976, -94.7139),  # MCI Kansas City
+    (29.9934, -90.2580),  # MSY New Orleans
+    (29.6454, -95.2789),  # IAH Houston
+    (32.8968, -97.0380),  # DFW Dallas
+    (35.3926, -97.6007),  # OKC Oklahoma City
     (39.8561, -104.6737),  # DEN Denver
     # West
     (33.4373, -112.0078),  # PHX Phoenix
@@ -77,15 +77,16 @@ _US_WAYPOINTS = [
 @dataclass
 class SimulatedAircraft:
     """A simulated aircraft in the world with lat/lon/alt position."""
+
     object_id: str
     # Position LLA
     lat: float
     lon: float
     alt_km: float
     # Velocity (km/s) in ENU-like local frame
-    vel_east: float   # km/s east
+    vel_east: float  # km/s east
     vel_north: float  # km/s north
-    vel_up: float     # km/s vertical
+    vel_up: float  # km/s vertical
     # Heading (degrees from north, clockwise)
     heading_deg: float
     speed_km_s: float
@@ -102,16 +103,17 @@ class SimulatedAircraft:
     waypoints: list = field(default_factory=list)
     waypoint_idx: int = 0
     # Mid-flight anomaly injection (scheduled event)
-    anomaly_event: str | None = None   # None | "hijack" | "spoof" | "orbit" | "altitude_jump" | "id_swap"
-    anomaly_trigger_at: float = 0.0       # world time when event fires
-    anomaly_fired: bool = False           # True once the event has been applied
-    _pre_spoof_lat: float = 0.0          # real position before GPS spoof
+    anomaly_event: str | None = None  # None | "hijack" | "spoof" | "orbit" | "altitude_jump" | "id_swap"
+    anomaly_trigger_at: float = 0.0  # world time when event fires
+    anomaly_fired: bool = False  # True once the event has been applied
+    _pre_spoof_lat: float = 0.0  # real position before GPS spoof
     _pre_spoof_lon: float = 0.0
 
 
 @dataclass
 class NodeConfig:
     """Configuration for a synthetic radar node."""
+
     node_id: str = "synth-node-01"
     rx_lat: float = 33.939182
     rx_lon: float = -84.651910
@@ -125,9 +127,9 @@ class NodeConfig:
     doppler_max: float = 300.0
     min_doppler: float = 15.0
     # Detection geometry
-    beam_azimuth_deg: float | None = None   # None → auto broadside in add_node
-    beam_width_deg: float = 41.0     # Yagi half-power beamwidth (40-42° spec)
-    max_range_km: float = 50.0       # maximum detection range
+    beam_azimuth_deg: float | None = None  # None → auto broadside in add_node
+    beam_width_deg: float = 41.0  # Yagi half-power beamwidth (40-42° spec)
+    max_range_km: float = 50.0  # maximum detection range
 
 
 def config_hash(config: NodeConfig) -> str:
@@ -145,15 +147,17 @@ class MetroCell:
     radial pattern as real STAR/SID procedures, which is where the receiver
     ring's coverage spokes lie.
     """
+
     core_lat: float
     core_lon: float
     radius_km: float = 70.0
     ops_weight: float = 1.0
-    arrival_bearings_deg: list = field(default_factory=list)    # empty → uniform
+    arrival_bearings_deg: list = field(default_factory=list)  # empty → uniform
     departure_bearings_deg: list = field(default_factory=list)
 
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────
+
 
 def _lla_to_enu(lat, lon, alt_km, ref_lat, ref_lon, ref_alt_km):
     """Convert LLA to ENU (km) relative to reference point."""
@@ -221,12 +225,10 @@ def _bistatic_doppler(target_enu, vel_enu, tx_enu, rx_enu, freq_hz):
 
 # ── Flight corridor route generation ─────────────────────────────────────────
 
+
 def _pick_route(center_lat: float, center_lon: float, max_dist_km: float = 300) -> list[tuple[float, float]]:
     """Pick a sequence of 2-4 waypoints near center forming a realistic route."""
-    nearby = [
-        wp for wp in _US_WAYPOINTS
-        if _haversine_km(center_lat, center_lon, wp[0], wp[1]) < max_dist_km
-    ]
+    nearby = [wp for wp in _US_WAYPOINTS if _haversine_km(center_lat, center_lon, wp[0], wp[1]) < max_dist_km]
     if len(nearby) < 2:
         nearby = sorted(_US_WAYPOINTS, key=lambda wp: _haversine_km(center_lat, center_lon, wp[0], wp[1]))[:6]
 
@@ -241,7 +243,7 @@ def _pick_route(center_lat: float, center_lon: float, max_dist_km: float = 300) 
         last = route[-1]
         remaining.sort(key=lambda wp: _haversine_km(last[0], last[1], wp[0], wp[1]))
         # Choose from closest 3, weighted toward closer ones
-        candidates = remaining[:min(3, len(remaining))]
+        candidates = remaining[: min(3, len(remaining))]
         nxt = random.choice(candidates)
         route.append(nxt)
         remaining = [wp for wp in remaining if wp != nxt]
@@ -249,6 +251,7 @@ def _pick_route(center_lat: float, center_lon: float, max_dist_km: float = 300) 
 
 
 # ── SimulationWorld ───────────────────────────────────────────────────────────
+
 
 class SimulationWorld:
     """Shared simulation world with aircraft and multiple observer nodes."""
@@ -284,10 +287,15 @@ class SimulationWorld:
         maximises cross-coverage of aircraft transiting the bistatic zone.
         """
         if config.beam_azimuth_deg is None:
-            config.beam_azimuth_deg = (_bearing_deg(
-                config.rx_lat, config.rx_lon,
-                config.tx_lat, config.tx_lon,
-            ) + 90.0) % 360.0
+            config.beam_azimuth_deg = (
+                _bearing_deg(
+                    config.rx_lat,
+                    config.rx_lon,
+                    config.tx_lat,
+                    config.tx_lon,
+                )
+                + 90.0
+            ) % 360.0
         self.nodes[config.node_id] = config
 
     def _choose_spawn_pose(self) -> tuple[float, float, list]:
@@ -312,8 +320,7 @@ class SimulationWorld:
         anywhere along the leg (not just at airports) and independent of node
         placement — the nationwide background that keeps the map alive."""
         start = random.choice(_US_WAYPOINTS)
-        far = [wp for wp in _US_WAYPOINTS
-               if _haversine_km(start[0], start[1], wp[0], wp[1]) > 400]
+        far = [wp for wp in _US_WAYPOINTS if _haversine_km(start[0], start[1], wp[0], wp[1]) > 400]
         dest = random.choice(far or _US_WAYPOINTS)
         t = random.uniform(0.0, 1.0)
         lat = start[0] + t * (dest[0] - start[0]) + random.gauss(0, 0.3)
@@ -332,6 +339,7 @@ class SimulationWorld:
         """Edge↔core radial (arrival/departure) or a chord near the core
         (overflight) — the radial geometry of real STAR/SID procedures, which is
         where the receiver ring's coverage spokes lie."""
+
         def at(bearing_deg: float, dist_km: float) -> tuple[float, float]:
             br = math.radians(bearing_deg)
             lat = cell.core_lat + math.degrees((dist_km * math.cos(br)) / R_EARTH)
@@ -340,18 +348,17 @@ class SimulationWorld:
             )
             return lat, lon
 
-        core = (cell.core_lat + random.gauss(0, 0.02),
-                cell.core_lon + random.gauss(0, 0.02))
+        core = (cell.core_lat + random.gauss(0, 0.02), cell.core_lon + random.gauss(0, 0.02))
 
         if kind == "arrival":
-            bearing = (random.choice(cell.arrival_bearings_deg)
-                       if cell.arrival_bearings_deg else random.uniform(0, 360))
+            bearing = random.choice(cell.arrival_bearings_deg) if cell.arrival_bearings_deg else random.uniform(0, 360)
             lat, lon = at(bearing, cell.radius_km)
             return lat, lon, [(lat, lon), core]
 
         if kind == "departure":
-            bearing = (random.choice(cell.departure_bearings_deg)
-                       if cell.departure_bearings_deg else random.uniform(0, 360))
+            bearing = (
+                random.choice(cell.departure_bearings_deg) if cell.departure_bearings_deg else random.uniform(0, 360)
+            )
             return core[0], core[1], [core, at(bearing, cell.radius_km)]
 
         # overflight: enter one edge, exit near the opposite edge, passing near the core
@@ -366,9 +373,7 @@ class SimulationWorld:
         are configured (keeps training export and solo single-node arcs intact)."""
         if self.nodes:
             anchor = random.choice(list(self.nodes.values()))
-            baseline_bearing = _bearing_deg(
-                anchor.rx_lat, anchor.rx_lon, anchor.tx_lat, anchor.tx_lon
-            )
+            baseline_bearing = _bearing_deg(anchor.rx_lat, anchor.rx_lon, anchor.tx_lat, anchor.tx_lon)
             perp_rad = math.radians((baseline_bearing + 90.0) % 360.0)
             dist_km = random.uniform(5.0, anchor.max_range_km * 0.7)
             anchor_lat = anchor.rx_lat + (dist_km * math.cos(perp_rad)) / 111.32
@@ -424,10 +429,10 @@ class SimulationWorld:
             alt_km = random.uniform(0.3, 15.0)
         elif object_type == "drone":
             speed_km_s = random.uniform(0.01, 0.06)  # 10-60 m/s — small UAS
-            alt_km = random.uniform(0.05, 0.5)        # 50-500m AGL
+            alt_km = random.uniform(0.05, 0.5)  # 50-500m AGL
         else:
             speed_km_s = random.uniform(0.12, 0.27)  # 120-270 m/s → typical jet
-            alt_km = random.uniform(5.0, 12.0)       # 16k-40k ft
+            alt_km = random.uniform(5.0, 12.0)  # 16k-40k ft
 
         # Anomalous objects also get ADS-B — anomalous means unusual flight
         # behaviour (speed/altitude/heading changes), NOT transponder absence.
@@ -448,12 +453,19 @@ class SimulationWorld:
 
         return SimulatedAircraft(
             object_id=oid,
-            lat=lat, lon=lon, alt_km=alt_km,
-            vel_east=vel_east, vel_north=vel_north, vel_up=vel_up,
-            heading_deg=heading, speed_km_s=speed_km_s,
-            has_adsb=has_adsb, is_anomalous=is_anomalous,
+            lat=lat,
+            lon=lon,
+            alt_km=alt_km,
+            vel_east=vel_east,
+            vel_north=vel_north,
+            vel_up=vel_up,
+            heading_deg=heading,
+            speed_km_s=speed_km_s,
+            has_adsb=has_adsb,
+            is_anomalous=is_anomalous,
             object_type=object_type,
-            adsb_hex=adsb_hex, adsb_callsign=adsb_callsign,
+            adsb_hex=adsb_hex,
+            adsb_callsign=adsb_callsign,
             created_at=self._time,
             lifetime_s=random.uniform(180, 900) if object_type != "drone" else random.uniform(60, 300),
             waypoints=route,
@@ -466,10 +478,7 @@ class SimulationWorld:
         self._time += dt
 
         # Remove expired aircraft
-        self.aircraft = [
-            ac for ac in self.aircraft
-            if (self._time - ac.created_at) < ac.lifetime_s
-        ]
+        self.aircraft = [ac for ac in self.aircraft if (self._time - ac.created_at) < ac.lifetime_s]
 
         # Spawn to maintain target count
         while len(self.aircraft) < self.min_aircraft:
@@ -579,9 +588,9 @@ class SimulationWorld:
         if ev == "hijack":
             # Sudden supersonic acceleration + 180° heading reversal.
             # Triggers: supersonic, instant_acceleration, instant_direction_change
-            ac.speed_km_s = random.uniform(0.36, 0.55)   # 360-550 m/s (Mach 1.05-1.6)
+            ac.speed_km_s = random.uniform(0.36, 0.55)  # 360-550 m/s (Mach 1.05-1.6)
             ac.heading_deg = (ac.heading_deg + random.uniform(140, 220)) % 360
-            ac.vel_up = random.uniform(-0.02, 0.02)       # erratic climb/descent
+            ac.vel_up = random.uniform(-0.02, 0.02)  # erratic climb/descent
 
         elif ev == "spoof":
             # GPS spoofing: freeze the ADS-B reported position at current location.
@@ -638,8 +647,12 @@ class SimulationWorld:
         tx_alt_km = node.tx_alt_ft * 0.3048 / 1000.0
         rx_enu = (0.0, 0.0, 0.0)
         tx_enu = _lla_to_enu(
-            node.tx_lat, node.tx_lon, tx_alt_km,
-            node.rx_lat, node.rx_lon, rx_alt_km,
+            node.tx_lat,
+            node.tx_lon,
+            tx_alt_km,
+            node.rx_lat,
+            node.rx_lon,
+            rx_alt_km,
         )
 
         delays = []
@@ -654,8 +667,12 @@ class SimulationWorld:
 
             # Convert aircraft to ENU relative to this node's RX
             target_enu = _lla_to_enu(
-                ac.lat, ac.lon, ac.alt_km,
-                node.rx_lat, node.rx_lon, rx_alt_km,
+                ac.lat,
+                ac.lon,
+                ac.alt_km,
+                node.rx_lat,
+                node.rx_lon,
+                rx_alt_km,
             )
             # Velocity already in km/s ENU
             vel_enu = (ac.vel_east, ac.vel_north, ac.vel_up)
@@ -697,15 +714,17 @@ class SimulationWorld:
                 else:
                     report_lat = ac.lat
                     report_lon = ac.lon
-                adsb_list.append({
-                    "hex": ac.adsb_hex,
-                    "flight": ac.adsb_callsign,
-                    "lat": round(report_lat, 5),
-                    "lon": round(report_lon, 5),
-                    "alt_baro": round(ac.alt_km * 1000 / 0.3048),
-                    "gs": round(speed_ms * 1.94384, 1),
-                    "track": round(ac.heading_deg, 1),
-                })
+                adsb_list.append(
+                    {
+                        "hex": ac.adsb_hex,
+                        "flight": ac.adsb_callsign,
+                        "lat": round(report_lat, 5),
+                        "lon": round(report_lon, 5),
+                        "alt_baro": round(ac.alt_km * 1000 / 0.3048),
+                        "gs": round(speed_ms * 1.94384, 1),
+                        "track": round(ac.heading_deg, 1),
+                    }
+                )
             else:
                 adsb_list.append(None)
 
@@ -735,10 +754,7 @@ class SimulationWorld:
 
     def generate_all_frames(self, timestamp_ms: int) -> dict[str, dict]:
         """Generate detection frames for all registered nodes."""
-        return {
-            node_id: self.generate_detections_for_node(node_id, timestamp_ms)
-            for node_id in self.nodes
-        }
+        return {node_id: self.generate_detections_for_node(node_id, timestamp_ms) for node_id in self.nodes}
 
     def get_aircraft_summary(self) -> list[dict]:
         """Return summary of all current aircraft (for debugging/monitoring)."""
@@ -760,8 +776,7 @@ class SimulationWorld:
 
     # ── ML Training Data Batch Export ────────────────────────────────────────
 
-    def generate_training_batch(self, n_frames: int, dt: float = 0.5,
-                                mode: str = "adsb") -> list[dict]:
+    def generate_training_batch(self, n_frames: int, dt: float = 0.5, mode: str = "adsb") -> list[dict]:
         """Generate a batch of labeled training frames for ML pipelines.
 
         Each output record contains:
@@ -794,8 +809,12 @@ class SimulationWorld:
                 tx_alt_km = node.tx_alt_ft * 0.3048 / 1000.0
                 rx_enu = (0.0, 0.0, 0.0)
                 tx_enu = _lla_to_enu(
-                    node.tx_lat, node.tx_lon, tx_alt_km,
-                    node.rx_lat, node.rx_lon, rx_alt_km,
+                    node.tx_lat,
+                    node.tx_lon,
+                    tx_alt_km,
+                    node.rx_lat,
+                    node.rx_lon,
+                    rx_alt_km,
                 )
 
                 delays = []
@@ -809,8 +828,12 @@ class SimulationWorld:
                         continue
 
                     target_enu = _lla_to_enu(
-                        ac.lat, ac.lon, ac.alt_km,
-                        node.rx_lat, node.rx_lon, rx_alt_km,
+                        ac.lat,
+                        ac.lon,
+                        ac.alt_km,
+                        node.rx_lat,
+                        node.rx_lon,
+                        rx_alt_km,
                     )
                     vel_enu = (ac.vel_east, ac.vel_north, ac.vel_up)
 
@@ -828,20 +851,22 @@ class SimulationWorld:
                     dopplers.append(round(doppler_noisy, 2))
                     snrs.append(round(snr, 2))
 
-                    ground_truth.append({
-                        "object_id": ac.object_id,
-                        "lat": round(ac.lat, 5),
-                        "lon": round(ac.lon, 5),
-                        "alt_km": round(ac.alt_km, 2),
-                        "heading_deg": round(ac.heading_deg, 1),
-                        "speed_ms": round(ac.speed_km_s * 1000, 1),
-                        "has_adsb": ac.has_adsb,
-                        "is_anomalous": ac.is_anomalous,
-                        "anomaly_event": ac.anomaly_event if ac.anomaly_fired else None,
-                        "delay_true": round(delay, 4),
-                        "doppler_true": round(doppler, 4),
-                        "is_clutter": False,
-                    })
+                    ground_truth.append(
+                        {
+                            "object_id": ac.object_id,
+                            "lat": round(ac.lat, 5),
+                            "lon": round(ac.lon, 5),
+                            "alt_km": round(ac.alt_km, 2),
+                            "heading_deg": round(ac.heading_deg, 1),
+                            "speed_ms": round(ac.speed_km_s * 1000, 1),
+                            "has_adsb": ac.has_adsb,
+                            "is_anomalous": ac.is_anomalous,
+                            "anomaly_event": ac.anomaly_event if ac.anomaly_fired else None,
+                            "delay_true": round(delay, 4),
+                            "doppler_true": round(doppler, 4),
+                            "is_clutter": False,
+                        }
+                    )
 
                     if ac.has_adsb:
                         if ac.anomaly_event == "spoof" and ac.anomaly_fired:
@@ -850,15 +875,17 @@ class SimulationWorld:
                         else:
                             report_lat = ac.lat
                             report_lon = ac.lon
-                        adsb_list.append({
-                            "hex": ac.adsb_hex,
-                            "flight": ac.adsb_callsign,
-                            "lat": round(report_lat, 5),
-                            "lon": round(report_lon, 5),
-                            "alt_baro": round(ac.alt_km * 1000 / 0.3048),
-                            "gs": round(ac.speed_km_s * 1000 * 1.94384, 1),
-                            "track": round(ac.heading_deg, 1),
-                        })
+                        adsb_list.append(
+                            {
+                                "hex": ac.adsb_hex,
+                                "flight": ac.adsb_callsign,
+                                "lat": round(report_lat, 5),
+                                "lon": round(report_lon, 5),
+                                "alt_baro": round(ac.alt_km * 1000 / 0.3048),
+                                "gs": round(ac.speed_km_s * 1000 * 1.94384, 1),
+                                "track": round(ac.heading_deg, 1),
+                            }
+                        )
                     else:
                         adsb_list.append(None)
 
@@ -868,12 +895,14 @@ class SimulationWorld:
                     delays.append(round(random.uniform(0, 60), 2))
                     dopplers.append(round(random.uniform(node.doppler_min, node.doppler_max), 2))
                     snrs.append(round(random.uniform(4, 7), 2))
-                    ground_truth.append({
-                        "object_id": None,
-                        "is_clutter": True,
-                        "is_anomalous": False,
-                        "has_adsb": False,
-                    })
+                    ground_truth.append(
+                        {
+                            "object_id": None,
+                            "is_clutter": True,
+                            "is_anomalous": False,
+                            "has_adsb": False,
+                        }
+                    )
                     adsb_list.append(None)
 
                 record = {
@@ -891,8 +920,7 @@ class SimulationWorld:
 
         return records
 
-    def export_training_ndjson(self, path: str, n_frames: int = 10000,
-                               dt: float = 0.5, mode: str = "adsb"):
+    def export_training_ndjson(self, path: str, n_frames: int = 10000, dt: float = 0.5, mode: str = "adsb"):
         """Export training data as newline-delimited JSON file.
 
         Fast bulk export for ML training pipelines.
