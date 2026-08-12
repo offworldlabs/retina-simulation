@@ -809,12 +809,9 @@ async def _poll_simulation_config(
     log.info("Simulation config polling started (url=%s, interval=%.1fs)", base_url, interval_s)
     url = f"{base_url}/api/simulation/config"
     loop = asyncio.get_event_loop()
-    ssl_context = (
-        ssl._create_unverified_context()
-        # noqa: S323 — localhost dev path only
-        if ("localhost" in base_url or "127.0.0.1" in base_url)
-        else None
-    )
+    ssl_context = None
+    if "localhost" in base_url or "127.0.0.1" in base_url:
+        ssl_context = ssl._create_unverified_context()  # noqa: S323 — unverified context only for the localhost/127.0.0.1 dev path above
     last_updated_at = 0.0
 
     while orchestrator._running:
