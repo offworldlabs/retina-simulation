@@ -124,6 +124,12 @@ class SimulatedAircraft:
     # Heading (degrees from north, clockwise)
     heading_deg: float
     speed_km_s: float
+    # Cruise speed the in-trail separation modulation recovers toward once a
+    # conflict clears (speed_km_s is the CURRENT speed, which separation and
+    # anomaly events both mutate).  0.0 = "not set" for pre-existing callers
+    # that construct aircraft directly; separation then treats the current
+    # speed as cruise.
+    base_speed_km_s: float = 0.0
     # Type and classification
     has_adsb: bool = False
     is_anomalous: bool = False
@@ -369,6 +375,19 @@ class SimulationWorld:
         self.metro_cells: list[MetroCell] = []
         self.frac_metro_traffic: float = 0.6
         self.arrival_departure_overflight_weights = (0.45, 0.35, 0.20)
+        # Traffic separation.  Real traffic never stacks: terminal in-trail
+        # minima are ~3 NM and crossing flows are altitude-split, but the
+        # hub-radial planner converges every metro spawn on the same ~2 km
+        # core with no deconfliction at all, so the fleet routinely flew
+        # pairs inside the solver's association gates (delay gate ≈ 1-3 km)
+        # — making association ambiguity a property of the SIMULATOR, not of
+        # realistic traffic.  Two mechanisms, both gated on these knobs:
+        # spawn poses resample away from live traffic, and in-flight
+        # conflicts resolve by slowing the later-created aircraft
+        # (_enforce_separation).  A pair needs BOTH horizontal and vertical
+        # proximity to count as a conflict.
+        self.min_separation_km: float = 5.0
+        self.min_vertical_sep_km: float = 0.6  # ~2000 ft
 
     def add_node(self, config: NodeConfig):
         """Register a synthetic node in the simulation.
@@ -520,7 +539,21 @@ class SimulationWorld:
         else:
             object_type = "aircraft"  # commercial — will get ADS-B in adsb modes
 
+        # Resample the spawn pose away from live traffic — best-effort, never
+        # fails: after the attempt budget the farthest candidate wins, so a
+        # saturated core degrades to "as separated as the planner could get"
+        # rather than blocking spawns (step() spawns in a while-loop up to
+        # min_aircraft; a hard reject there would spin forever).
         lat, lon, route = self._choose_spawn_pose()
+        best = (self._nearest_traffic_km(lat, lon), lat, lon, route)
+        for _ in range(9):
+            if best[0] >= self.min_separation_km:
+                break
+            lat, lon, route = self._choose_spawn_pose()
+            d = self._nearest_traffic_km(lat, lon)
+            if d > best[0]:
+                best = (d, lat, lon, route)
+        _, lat, lon, route = best
 
         if mode == "anomalous" and random.random() < 0.2:
             is_anomalous = True
@@ -572,6 +605,7 @@ class SimulationWorld:
             vel_up=vel_up,
             heading_deg=heading,
             speed_km_s=speed_km_s,
+            base_speed_km_s=speed_km_s,
             has_adsb=has_adsb,
             is_anomalous=is_anomalous,
             object_type=object_type,
@@ -616,8 +650,7 @@ class SimulationWorld:
         dist_km = self.retire_edge_km + 15.0
         brg_rad = math.radians(brg)
         wp_lat = self.center_lat + dist_km * math.cos(brg_rad) / 111.32
-        wp_lon = self.center_lon + dist_km * math.sin(brg_rad) / (
-            111.32 * math.cos(math.radians(self.center_lat)))
+        wp_lon = self.center_lon + dist_km * math.sin(brg_rad) / (111.32 * math.cos(math.radians(self.center_lat)))
         ac.waypoints = [(wp_lat, wp_lon)]
         ac.waypoint_idx = 0
         ac.departing = True
@@ -644,8 +677,7 @@ class SimulationWorld:
         # Expired non-drones head for the edge before the retire filter sees
         # them past the edge (see _route_out / _should_retire).
         for ac in self.aircraft:
-            if (not ac.departing and ac.object_type != "drone"
-                    and self._time - ac.created_at >= ac.lifetime_s):
+            if not ac.departing and ac.object_type != "drone" and self._time - ac.created_at >= ac.lifetime_s:
                 self._route_out(ac)
 
         # Retire expired aircraft (edge-gated — see _should_retire)
@@ -660,6 +692,50 @@ class SimulationWorld:
         # Update each aircraft
         for ac in self.aircraft:
             self._update_aircraft(ac, dt)
+
+        self._enforce_separation(dt)
+
+    def _nearest_traffic_km(self, lat: float, lon: float) -> float:
+        """Horizontal distance to the closest live aircraft (inf when none).
+
+        Horizontal-only on purpose: spawn altitude is rolled after the pose,
+        so a vertical allowance here would be checked against a value that
+        does not exist yet — and a stricter horizontal-only bubble at spawn
+        costs nothing (the resample budget absorbs it)."""
+        if not self.aircraft:
+            return float("inf")
+        return min(_haversine_km(lat, lon, ac.lat, ac.lon) for ac in self.aircraft)
+
+    def _enforce_separation(self, dt: float):
+        """In-trail speed modulation: the later-created aircraft of any
+        conflicting pair slows toward 70% of cruise until the conflict clears,
+        then recovers toward cruise.
+
+        Speed-only, never heading: heading belongs to the waypoint router, and
+        a lateral dodge here would fight it every tick.  Slowing the trailer
+        resolves both in-trail stacking (the leader pulls away) and crossing
+        conflicts (the leader crosses first) — the same sequencing terminal
+        control actually applies.  Exemptions are the point, not an
+        optimisation: anomalous aircraft keep their erratic close approaches
+        (that proximity IS the signature the radar network exists to catch),
+        and drones live below min_vertical_sep_km of the jet flow anyway.
+        The blend is dt-based (~3 s time constant) so speed changes read as
+        throttle on the Doppler channel, not steps."""
+        flow = [ac for ac in self.aircraft if not ac.is_anomalous and ac.object_type == "aircraft"]
+        flow.sort(key=lambda ac: ac.created_at)
+        slowed: set[str] = set()
+        for i, trail in enumerate(flow):
+            for lead in flow[:i]:
+                if abs(lead.alt_km - trail.alt_km) >= self.min_vertical_sep_km:
+                    continue
+                if _haversine_km(lead.lat, lead.lon, trail.lat, trail.lon) < self.min_separation_km:
+                    slowed.add(trail.object_id)
+                    break
+        blend = 1.0 - math.exp(-dt / 3.0)
+        for ac in flow:
+            base = ac.base_speed_km_s or ac.speed_km_s
+            target = base * 0.7 if ac.object_id in slowed else base
+            ac.speed_km_s += (target - ac.speed_km_s) * blend
 
     # ── Mid-flight anomaly scheduling ────────────────────────────────────────
 

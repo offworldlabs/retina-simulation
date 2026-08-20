@@ -201,6 +201,11 @@ class TestVerticalRateDecays:
         for ac in tagged:
             ac.vel_up = 0.003   # force the worst-case spawn climb rate
             ac.alt_km = 8.0
+            # Outlive the 600 s window: the subject is vel_up decay, and
+            # whether seed 3's lifetime rolls happen to retire the tagged
+            # aircraft first is RNG-stream trivia (spawn-separation resampling
+            # legitimately consumes extra draws).
+            ac.lifetime_s = 10_000.0
         for _ in range(600):    # 600 s of simulation
             w.step(1.0)
         survivors = [ac for ac in w.aircraft if ac in tagged]
