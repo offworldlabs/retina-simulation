@@ -20,7 +20,7 @@ jobs:
 
       # retina-custody is a sibling library on no package index, so pip cannot
       # resolve the `retina-custody>=0.1.0` dependency on its own. The pin stays
-      # generic in pyproject.toml on purpose: Tower-Finder installs these libs
+      # generic in pyproject.toml on purpose: retina-server installs these libs
       # from local submodule paths, and a direct URL there would collide with
       # "conflicting URLs for package retina-custody".
       - run: uv pip install --system "retina-custody @ git+https://github.com/offworldlabs/retina-custody@v0.1.0"
