@@ -31,11 +31,20 @@ def _world():
 
 def _plane(oid, lat, lon, alt_km=8.0, speed=0.2, created_at=0.0, **kw):
     return SimulatedAircraft(
-        object_id=oid, lat=lat, lon=lon, alt_km=alt_km,
-        vel_east=0.0, vel_north=speed, vel_up=0.0,
-        heading_deg=0.0, speed_km_s=speed, base_speed_km_s=speed,
-        created_at=created_at, waypoints=[(lat, lon), (lat + 2.0, lon)],
-        waypoint_idx=1, **kw,
+        object_id=oid,
+        lat=lat,
+        lon=lon,
+        alt_km=alt_km,
+        vel_east=0.0,
+        vel_north=speed,
+        vel_up=0.0,
+        heading_deg=0.0,
+        speed_km_s=speed,
+        base_speed_km_s=speed,
+        created_at=created_at,
+        waypoints=[(lat, lon), (lat + 2.0, lon)],
+        waypoint_idx=1,
+        **kw,
     )
 
 
@@ -116,10 +125,8 @@ class TestInTrailModulation:
     def test_anomalous_and_drones_exempt(self):
         world = _world()
         lead = _plane("lead", _CORE_LAT, _CORE_LON, created_at=0.0)
-        anom = _plane("anom", _CORE_LAT + 0.005, _CORE_LON, created_at=5.0,
-                      is_anomalous=True, object_type="anomalous")
-        drone = _plane("drone", _CORE_LAT + 0.005, _CORE_LON, created_at=6.0,
-                       object_type="drone")
+        anom = _plane("anom", _CORE_LAT + 0.005, _CORE_LON, created_at=5.0, is_anomalous=True, object_type="anomalous")
+        drone = _plane("drone", _CORE_LAT + 0.005, _CORE_LON, created_at=6.0, object_type="drone")
         world.aircraft = [lead, anom, drone]
         world._enforce_separation(1.0)
         assert anom.speed_km_s == anom.base_speed_km_s
@@ -133,12 +140,11 @@ class TestInTrailModulation:
         world.min_aircraft, world.max_aircraft = 20, 25
         for _ in range(600):
             world.step(1.0, mode="adsb")
-        flow = [ac for ac in world.aircraft
-                if not ac.is_anomalous and ac.object_type == "aircraft"]
+        flow = [ac for ac in world.aircraft if not ac.is_anomalous and ac.object_type == "aircraft"]
         conflicts = sum(
             1
             for i, a in enumerate(flow)
-            for b in flow[i + 1:]
+            for b in flow[i + 1 :]
             if abs(a.alt_km - b.alt_km) < world.min_vertical_sep_km
             and _haversine_km(a.lat, a.lon, b.lat, b.lon) < world.min_separation_km
         )

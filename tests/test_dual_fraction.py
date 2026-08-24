@@ -29,8 +29,12 @@ def _fleet(**kw):
 class TestDualFractionCarve:
     def test_dual_ids_appear_in_rx_sharing_pairs_scatter_gvl(self):
         fleet = _fleet(
-            n_nodes=30, metro="gvl", n_cluster=30, n_clusters=1,
-            layout="scatter", dual_fraction=0.4,
+            n_nodes=30,
+            metro="gvl",
+            n_cluster=30,
+            n_clusters=1,
+            layout="scatter",
+            dual_fraction=0.4,
         )
         dual_nodes = [n for n in fleet if _DUAL_ID_RE.search(n["node_id"])]
         # n_dual_sites = round(30 * 0.4 / 2) = 6 sites -> up to 12 nodes,
@@ -45,16 +49,19 @@ class TestDualFractionCarve:
         for a, b in sites.values():
             # Same antenna, same mast — only the transmitter differs (mirrors
             # test_dual_sites.py's rx-sharing assertion for layout="dual").
-            assert (a["rx_lat"], a["rx_lon"], a["rx_alt_ft"]) == \
-                   (b["rx_lat"], b["rx_lon"], b["rx_alt_ft"])
+            assert (a["rx_lat"], a["rx_lon"], a["rx_alt_ft"]) == (b["rx_lat"], b["rx_lon"], b["rx_alt_ft"])
             assert (a["tx_lat"], a["tx_lon"]) != (b["tx_lat"], b["tx_lon"])
 
     def test_dual_ids_appear_in_ring_layout_too(self):
         # Spec: "append dual sites after the existing layout output (scatter
         # AND ring branches)" — ring is the default layout.
         fleet = _fleet(
-            n_nodes=30, metro="gvl", n_cluster=30, n_clusters=1,
-            layout="ring", dual_fraction=0.4,
+            n_nodes=30,
+            metro="gvl",
+            n_cluster=30,
+            n_clusters=1,
+            layout="ring",
+            dual_fraction=0.4,
         )
         dual_nodes = [n for n in fleet if _DUAL_ID_RE.search(n["node_id"])]
         assert dual_nodes
@@ -63,10 +70,18 @@ class TestDualFractionCarve:
         # layout="dual" is already all-dual; dual_fraction must be a no-op,
         # not an additional carve on top of an already-fully-dual cluster.
         without = _fleet(
-            n_nodes=16, metro="gvl", n_cluster=16, n_clusters=1, layout="dual",
+            n_nodes=16,
+            metro="gvl",
+            n_cluster=16,
+            n_clusters=1,
+            layout="dual",
         )
         with_frac = _fleet(
-            n_nodes=16, metro="gvl", n_cluster=16, n_clusters=1, layout="dual",
+            n_nodes=16,
+            metro="gvl",
+            n_cluster=16,
+            n_clusters=1,
+            layout="dual",
             dual_fraction=0.5,
         )
         assert without == with_frac
@@ -84,16 +99,18 @@ class TestDeterminismRegression:
     def test_dual_fraction_zero_with_metro_layout_ring(self):
         baseline = _fleet(n_nodes=30, metro="gvl", n_cluster=30, n_clusters=1, layout="ring")
         explicit_zero = _fleet(
-            n_nodes=30, metro="gvl", n_cluster=30, n_clusters=1, layout="ring",
+            n_nodes=30,
+            metro="gvl",
+            n_cluster=30,
+            n_clusters=1,
+            layout="ring",
             dual_fraction=0.0,
         )
         assert explicit_zero == baseline
 
     def test_same_seed_same_dual_fraction_is_deterministic(self):
-        a = _fleet(n_nodes=30, metro="gvl", n_cluster=30, n_clusters=1,
-                   layout="scatter", dual_fraction=0.4)
-        b = _fleet(n_nodes=30, metro="gvl", n_cluster=30, n_clusters=1,
-                   layout="scatter", dual_fraction=0.4)
+        a = _fleet(n_nodes=30, metro="gvl", n_cluster=30, n_clusters=1, layout="scatter", dual_fraction=0.4)
+        b = _fleet(n_nodes=30, metro="gvl", n_cluster=30, n_clusters=1, layout="scatter", dual_fraction=0.4)
         assert a == b
 
 
@@ -102,14 +119,15 @@ class TestDualFractionClampAndGuards:
         # n_dual_nodes is clamped to n_cluster + n_metro — it can never
         # exceed the whole layout's node budget even at dual_fraction=1.0.
         fleet = _fleet(
-            n_nodes=30, metro="gvl", n_cluster=30, n_clusters=1,
-            layout="scatter", dual_fraction=1.0,
+            n_nodes=30,
+            metro="gvl",
+            n_cluster=30,
+            n_clusters=1,
+            layout="scatter",
+            dual_fraction=1.0,
         )
         dual_nodes = [n for n in fleet if _DUAL_ID_RE.search(n["node_id"])]
-        non_solo_non_dual = [
-            n for n in fleet
-            if not _DUAL_ID_RE.search(n["node_id"]) and "SOLO" not in n["node_id"]
-        ]
+        non_solo_non_dual = [n for n in fleet if not _DUAL_ID_RE.search(n["node_id"]) and "SOLO" not in n["node_id"]]
         # Whole cluster budget (30, after the metro-scoped solo carve leaves
         # it untouched) went to dual sites; nothing left for scatter nodes.
         assert len(dual_nodes) <= 30
@@ -173,9 +191,14 @@ def _run_one_poll(monkeypatch, orchestrator, scene, cfg):
         return _FakeResponse(cfg)
 
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
-    asyncio.run(_poll_simulation_config(
-        orchestrator, "http://validation.example", interval_s=0.0, scene=scene,
-    ))
+    asyncio.run(
+        _poll_simulation_config(
+            orchestrator,
+            "http://validation.example",
+            interval_s=0.0,
+            scene=scene,
+        )
+    )
 
 
 class TestScenePollDetection:

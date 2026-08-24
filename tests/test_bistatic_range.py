@@ -30,9 +30,14 @@ def _node(max_bistatic_range_km):
     # Beam aimed west, wide open, so only the range rule can reject.
     return NodeConfig(
         node_id="bistatic-node",
-        rx_lat=_RX_LAT, rx_lon=_RX_LON, rx_alt_ft=0.0,
-        tx_lat=_RX_LAT, tx_lon=_TX_LON, tx_alt_ft=0.0,
-        beam_azimuth_deg=270.0, beam_width_deg=200.0,
+        rx_lat=_RX_LAT,
+        rx_lon=_RX_LON,
+        rx_alt_ft=0.0,
+        tx_lat=_RX_LAT,
+        tx_lon=_TX_LON,
+        tx_alt_ft=0.0,
+        beam_azimuth_deg=270.0,
+        beam_width_deg=200.0,
         max_range_km=50.0,
         max_bistatic_range_km=max_bistatic_range_km,
     )
@@ -43,12 +48,13 @@ def _aircraft(bearing_deg, range_km):
     return SimulatedAircraft(
         object_id="probe",
         lat=_RX_LAT + math.degrees((range_km * math.cos(br)) / 6371.0),
-        lon=_RX_LON + math.degrees(
-            (range_km * math.sin(br)) / (6371.0 * math.cos(math.radians(_RX_LAT)))
-        ),
+        lon=_RX_LON + math.degrees((range_km * math.sin(br)) / (6371.0 * math.cos(math.radians(_RX_LAT)))),
         alt_km=0.0,
-        vel_east=0.0, vel_north=0.0, vel_up=0.0,
-        heading_deg=0.0, speed_km_s=0.2,
+        vel_east=0.0,
+        vel_north=0.0,
+        vel_up=0.0,
+        heading_deg=0.0,
+        speed_km_s=0.2,
     )
 
 
@@ -112,16 +118,13 @@ class TestEveryNodeDeclaresABistaticLimit:
     def test_metro_fleet_is_uniformly_bistatic(self):
         from retina_simulation.generator import generate_fleet
 
-        fleet = generate_fleet(n_nodes=15, metro="gvl", n_cluster=10,
-                               n_clusters=1, use_tower_api=False, seed=42)
-        missing = [n["node_id"] for n in fleet
-                   if n.get("max_bistatic_range_km") is None]
+        fleet = generate_fleet(n_nodes=15, metro="gvl", n_cluster=10, n_clusters=1, use_tower_api=False, seed=42)
+        missing = [n["node_id"] for n in fleet if n.get("max_bistatic_range_km") is None]
         assert not missing, f"nodes still monostatic: {missing}"
 
     def test_the_limit_matches_the_declared_range(self):
         from retina_simulation.generator import generate_fleet
 
-        fleet = generate_fleet(n_nodes=15, metro="gvl", n_cluster=10,
-                               n_clusters=1, use_tower_api=False, seed=7)
+        fleet = generate_fleet(n_nodes=15, metro="gvl", n_cluster=10, n_clusters=1, use_tower_api=False, seed=7)
         for n in fleet:
             assert n["max_bistatic_range_km"] == n["max_range_km"], n["node_id"]

@@ -29,8 +29,7 @@ def _summary(**overrides) -> dict:
 
 class TestBuildGroundTruthPayload:
     def test_passes_through_adsb_and_anomaly_fields(self):
-        out = build_ground_truth_payload([_summary(anomaly_event="hijack",
-                                                   is_anomalous=True)])
+        out = build_ground_truth_payload([_summary(anomaly_event="hijack", is_anomalous=True)])
         assert len(out) == 1
         entry = out[0]
         assert entry["hex"] == "a1b2c3"
@@ -41,8 +40,7 @@ class TestBuildGroundTruthPayload:
         assert entry["alt_m"] == 9500.0
 
     def test_dark_object_falls_back_to_object_id(self):
-        out = build_ground_truth_payload([_summary(
-            adsb_hex=None, adsb_callsign=None, has_adsb=False)])
+        out = build_ground_truth_payload([_summary(adsb_hex=None, adsb_callsign=None, has_adsb=False)])
         assert out[0]["hex"] == "obj-0001"
         assert out[0]["has_adsb"] is False
         assert out[0]["adsb_callsign"] is None

@@ -81,15 +81,21 @@ class TestUndesignedGeometry:
         _fleet, scat = _scatter()
         errs = []
         for n in scat:
-            to_core = math.degrees(math.atan2(
-                math.sin(math.radians(GVL["lon"] - n["rx_lon"])) * math.cos(math.radians(GVL["lat"])),
-                math.cos(math.radians(n["rx_lat"])) * math.sin(math.radians(GVL["lat"]))
-                - math.sin(math.radians(n["rx_lat"])) * math.cos(math.radians(GVL["lat"]))
-                * math.cos(math.radians(GVL["lon"] - n["rx_lon"])),
-            )) % 360.0
+            to_core = (
+                math.degrees(
+                    math.atan2(
+                        math.sin(math.radians(GVL["lon"] - n["rx_lon"])) * math.cos(math.radians(GVL["lat"])),
+                        math.cos(math.radians(n["rx_lat"])) * math.sin(math.radians(GVL["lat"]))
+                        - math.sin(math.radians(n["rx_lat"]))
+                        * math.cos(math.radians(GVL["lat"]))
+                        * math.cos(math.radians(GVL["lon"] - n["rx_lon"])),
+                    )
+                )
+                % 360.0
+            )
             errs.append(abs((n["beam_azimuth_deg"] - to_core + 180.0) % 360.0 - 180.0))
-        assert max(errs) > 45.0          # somebody points well off-core
-        assert sum(e < 45.0 for e in errs) >= len(errs) // 2   # most do not
+        assert max(errs) > 45.0  # somebody points well off-core
+        assert sum(e < 45.0 for e in errs) >= len(errs) // 2  # most do not
 
     def test_reach_varies_but_beamwidth_is_uniform(self):
         """Reach varies per site (60 km is what a good setup achieves, not an
@@ -116,10 +122,9 @@ class TestUndesignedGeometry:
         _fleet, scat = _scatter()
         nearest = []
         for a in scat:
-            nearest.append(min(
-                _haversine_km(a["rx_lat"], a["rx_lon"], b["rx_lat"], b["rx_lon"])
-                for b in scat if b is not a
-            ))
+            nearest.append(
+                min(_haversine_km(a["rx_lat"], a["rx_lon"], b["rx_lat"], b["rx_lon"]) for b in scat if b is not a)
+            )
         assert max(nearest) / max(min(nearest), 0.1) > 3.0
 
 
@@ -132,8 +137,7 @@ class TestDeterminism:
     def test_different_seed_different_placement(self):
         _fa, sa = _scatter(seed=7)
         _fb, sb = _scatter(seed=8)
-        assert [(n["rx_lat"], n["rx_lon"]) for n in sa] != \
-               [(n["rx_lat"], n["rx_lon"]) for n in sb]
+        assert [(n["rx_lat"], n["rx_lon"]) for n in sa] != [(n["rx_lat"], n["rx_lon"]) for n in sb]
 
 
 class TestLayoutFleetFaults:
@@ -141,15 +145,15 @@ class TestLayoutFleetFaults:
 
     def test_scatter_without_metro_raises_instead_of_a_short_fleet(self):
         import pytest
+
         with pytest.raises(ValueError, match="requires --metro"):
-            generate_fleet(n_nodes=16, n_cluster=12, layout="scatter",
-                           use_tower_api=False, seed=42)
+            generate_fleet(n_nodes=16, n_cluster=12, layout="scatter", use_tower_api=False, seed=42)
 
     def test_dual_without_metro_raises_instead_of_a_short_fleet(self):
         import pytest
+
         with pytest.raises(ValueError, match="requires --metro"):
-            generate_fleet(n_nodes=16, n_cluster=12, layout="dual",
-                           use_tower_api=False, seed=42)
+            generate_fleet(n_nodes=16, n_cluster=12, layout="dual", use_tower_api=False, seed=42)
 
     def test_scatter_budget_is_not_gated_on_the_ring_table(self):
         """A metro with no _RING_TXS entry used to zero n_cluster for scatter,
@@ -160,8 +164,8 @@ class TestLayoutFleetFaults:
 
     def test_coverage_cells_do_not_describe_rings_for_ringless_layouts(self):
         from retina_simulation.generator import coverage_cells
-        cells = coverage_cells(n_cluster=12, n_clusters=1, metro="gvl",
-                               layout="scatter")
+
+        cells = coverage_cells(n_cluster=12, n_clusters=1, metro="gvl", layout="scatter")
         assert len(cells) == 1
         assert cells[0]["ring_id"] == "synth-SCATTER"
         assert abs(cells[0]["core_lat"] - GVL["lat"]) < 1e-9
@@ -170,14 +174,13 @@ class TestLayoutFleetFaults:
 
     def test_ring_layout_cells_are_unchanged(self):
         from retina_simulation.generator import coverage_cells
-        ring = coverage_cells(n_cluster=12, n_clusters=1, metro="gvl",
-                              layout="ring")
+
+        ring = coverage_cells(n_cluster=12, n_clusters=1, metro="gvl", layout="ring")
         default = coverage_cells(n_cluster=12, n_clusters=1, metro="gvl")
         assert ring == default
 
     def test_solo_nodes_declare_the_bistatic_limit(self):
-        fleet = generate_fleet(n_nodes=30, n_cluster=8, n_clusters=1,
-                               use_tower_api=False, seed=42)
+        fleet = generate_fleet(n_nodes=30, n_cluster=8, n_clusters=1, use_tower_api=False, seed=42)
         solos = [n for n in fleet if "SOLO" in n["node_id"]]
         assert solos, "expected solo nodes in a nationwide fleet"
         for n in solos:
@@ -185,6 +188,7 @@ class TestLayoutFleetFaults:
 
     def test_empty_fleet_summary_does_not_crash(self):
         from retina_simulation.generator import fleet_summary
+
         s = fleet_summary([])
         assert s["total_nodes"] == 0
 
@@ -192,21 +196,23 @@ class TestLayoutFleetFaults:
 class TestVerticalRateDecays:
     def test_vel_up_decays_toward_level_flight(self):
         import random
+
         from retina_simulation.world import SimulationWorld
+
         random.seed(3)
         w = SimulationWorld()
         w.step(1.0)  # spawn traffic
         tagged = list(w.aircraft)
         assert tagged
         for ac in tagged:
-            ac.vel_up = 0.003   # force the worst-case spawn climb rate
+            ac.vel_up = 0.003  # force the worst-case spawn climb rate
             ac.alt_km = 8.0
             # Outlive the 600 s window: the subject is vel_up decay, and
             # whether seed 3's lifetime rolls happen to retire the tagged
             # aircraft first is RNG-stream trivia (spawn-separation resampling
             # legitimately consumes extra draws).
             ac.lifetime_s = 10_000.0
-        for _ in range(600):    # 600 s of simulation
+        for _ in range(600):  # 600 s of simulation
             w.step(1.0)
         survivors = [ac for ac in w.aircraft if ac in tagged]
         assert survivors

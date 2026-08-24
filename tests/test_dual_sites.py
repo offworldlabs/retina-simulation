@@ -41,8 +41,7 @@ class TestDualSiteStructure:
         """Same antenna, same mast — only the transmitter differs."""
         _fleet, sites = _dual_sites()
         for a, b in sites.values():
-            assert (a["rx_lat"], a["rx_lon"], a["rx_alt_ft"]) == \
-                   (b["rx_lat"], b["rx_lon"], b["rx_alt_ft"])
+            assert (a["rx_lat"], a["rx_lon"], a["rx_alt_ft"]) == (b["rx_lat"], b["rx_lon"], b["rx_alt_ft"])
 
     def test_the_pair_shares_one_detection_area(self):
         _fleet, sites = _dual_sites()
@@ -56,8 +55,7 @@ class TestDualSiteStructure:
         _fleet, sites = _dual_sites()
         for a, b in sites.values():
             assert (a["tx_lat"], a["tx_lon"]) != (b["tx_lat"], b["tx_lon"])
-            sep = math.hypot((a["tx_lat"] - b["tx_lat"]) * 111.32,
-                             (a["tx_lon"] - b["tx_lon"]) * 91.0)
+            sep = math.hypot((a["tx_lat"] - b["tx_lat"]) * 111.32, (a["tx_lon"] - b["tx_lon"]) * 91.0)
             assert sep > 1.0, "co-sited transmitters give an identical ellipse"
 
     def test_vhf_band_restriction_is_honoured(self):
@@ -72,9 +70,7 @@ class TestDualSiteStructure:
         low."""
         _fleet, sites = _dual_sites()
         core = (34.852, -82.394)
-        d = [math.hypot((p[0]["rx_lat"] - core[0]) * 111.32,
-                        (p[0]["rx_lon"] - core[1]) * 91.0)
-             for p in sites.values()]
+        d = [math.hypot((p[0]["rx_lat"] - core[0]) * 111.32, (p[0]["rx_lon"] - core[1]) * 91.0) for p in sites.values()]
         assert max(d) - min(d) > 20.0
 
 
@@ -85,8 +81,7 @@ class TestIlluminatorSelection:
         gives two near-parallel ellipses and a degenerate intersection."""
         _fleet, sites = _dual_sites()
         angles = [
-            _subtended_deg(a["rx_lat"], a["rx_lon"],
-                           (a["tx_lat"], a["tx_lon"]), (b["tx_lat"], b["tx_lon"]))
+            _subtended_deg(a["rx_lat"], a["rx_lon"], (a["tx_lat"], a["tx_lon"]), (b["tx_lat"], b["tx_lon"]))
             for a, b in sites.values()
         ]
         assert sum(angles) / len(angles) > 25.0
@@ -110,9 +105,12 @@ class TestAim:
         off = []
         for pair in sites.values():
             n = pair[0]
-            want = math.degrees(math.atan2(
-                (core[1] - n["rx_lon"]) * math.cos(math.radians(core[0])),
-                core[0] - n["rx_lat"])) % 360.0
+            want = (
+                math.degrees(
+                    math.atan2((core[1] - n["rx_lon"]) * math.cos(math.radians(core[0])), core[0] - n["rx_lat"])
+                )
+                % 360.0
+            )
             off.append(abs((n["beam_azimuth_deg"] - want + 180) % 360 - 180))
         assert sum(off) / len(off) < 45.0
 
@@ -162,10 +160,9 @@ class TestGeneratorCLI:
         src = inspect.getsource(gen.main)
         tree = ast.parse(src.lstrip())
         used = {
-            node.attr for node in ast.walk(tree)
-            if isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "args"
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "args"
         }
         missing = used - self._parser_dests()
         assert not missing, f"main() reads unregistered args: {sorted(missing)}"
@@ -179,9 +176,7 @@ class TestGeneratorCLI:
         seen = {}
 
         def _capture(self, *a, **kw):
-            seen["ns"] = argparse.Namespace(**{
-                act.dest: act.default for act in self._actions
-            })
+            seen["ns"] = argparse.Namespace(**{act.dest: act.default for act in self._actions})
             raise SystemExit(0)
 
         with mock.patch.object(argparse.ArgumentParser, "parse_args", _capture):
