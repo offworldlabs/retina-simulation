@@ -73,6 +73,40 @@ _US_WAYPOINTS = [
     (45.5898, -122.5951),  # PDX Portland
 ]
 
+# ── Regional waypoint nets ────────────────────────────────────────────────────
+# A metro-scoped fleet has no receivers outside its own metro, so cross-country
+# en-route traffic is pure waste: it burns simulation budget on aircraft no node
+# can ever see, and puts ground-truth tracks on the map thousands of km from the
+# only coverage that exists. Selecting a regional net keeps the background
+# traffic inside the region the fleet actually covers.
+#
+# Keyed by the same metro codes as generator._KNOWN_METROS.
+_REGIONAL_WAYPOINTS: dict[str, list[tuple[float, float]]] = {
+    "gvl": [
+        (34.8957, -82.2189),  # GSP Greenville-Spartanburg
+        (34.8479, -82.3499),  # GMU Greenville Downtown
+        (34.9157, -81.9565),  # SPA Spartanburg Downtown Memorial
+        (34.4946, -82.7093),  # AND Anderson Regional
+        (35.4362, -82.5418),  # AVL Asheville
+        (35.2144, -80.9473),  # CLT Charlotte
+        (34.8964, -81.0572),  # RKH Rock Hill
+        (33.9388, -81.1195),  # CAE Columbia
+        (34.4984, -81.9573),  # GRD Greenwood
+        (35.7565, -81.6790),  # HKY Hickory
+    ],
+}
+
+
+def waypoints_for_metro(metro: str | None) -> list[tuple[float, float]]:
+    """Waypoint net for a metro code, falling back to the nationwide net.
+
+    An unknown or absent code returns _US_WAYPOINTS, so callers that don't know
+    about regional scoping keep the original coast-to-coast behaviour.
+    """
+    if not metro:
+        return _US_WAYPOINTS
+    return _REGIONAL_WAYPOINTS.get(metro.strip().lower(), _US_WAYPOINTS)
+
 
 @dataclass
 class SimulatedAircraft:
@@ -90,6 +124,12 @@ class SimulatedAircraft:
     # Heading (degrees from north, clockwise)
     heading_deg: float
     speed_km_s: float
+    # Cruise speed the in-trail separation modulation recovers toward once a
+    # conflict clears (speed_km_s is the CURRENT speed, which separation and
+    # anomaly events both mutate).  0.0 = "not set" for pre-existing callers
+    # that construct aircraft directly; separation then treats the current
+    # speed as cruise.
+    base_speed_km_s: float = 0.0
     # Type and classification
     has_adsb: bool = False
     is_anomalous: bool = False
@@ -99,6 +139,9 @@ class SimulatedAircraft:
     # Lifecycle
     created_at: float = 0.0
     lifetime_s: float = 600.0
+    # Expired and rerouted toward the region edge for retirement (see
+    # SimulationWorld._route_out); guards the reroute from re-firing.
+    departing: bool = False
     # Waypoint navigation
     waypoints: list = field(default_factory=list)
     waypoint_idx: int = 0
@@ -128,8 +171,16 @@ class NodeConfig:
     min_doppler: float = 15.0
     # Detection geometry
     beam_azimuth_deg: float | None = None  # None → auto broadside in add_node
-    beam_width_deg: float = 41.0  # Yagi half-power beamwidth (40-42° spec)
-    max_range_km: float = 50.0  # maximum detection range
+    beam_width_deg: float = 42.0  # Yagi half-power beamwidth (fleet spec)
+    max_range_km: float = 50.0  # maximum RX→target range (monostatic)
+    # Maximum *bistatic* range: (RX→target) + (target→TX) − baseline, i.e. the
+    # differential range the delay measurement actually represents, and what
+    # sets received power via the bistatic radar equation.  Physically the
+    # correct limit — it makes the footprint an ellipse with foci at RX and TX
+    # rather than a circle around the RX.
+    # None keeps the older monostatic rule, so real hardware nodes carrying
+    # only max_range_km are unaffected.
+    max_bistatic_range_km: float | None = None
 
 
 def config_hash(config: NodeConfig) -> str:
@@ -225,12 +276,37 @@ def _bistatic_doppler(target_enu, vel_enu, tx_enu, rx_enu, freq_hz):
 
 # ── Flight corridor route generation ─────────────────────────────────────────
 
+_NATIONWIDE_MIN_LEG_KM = 400.0
 
-def _pick_route(center_lat: float, center_lon: float, max_dist_km: float = 300) -> list[tuple[float, float]]:
+
+def _min_leg_km(waypoints: list[tuple[float, float]]) -> float:
+    """A "this is a real en-route leg" threshold scaled to a waypoint net.
+
+    Scaled from the net's own extent, capped at the nationwide 400 km so the
+    continent-wide net keeps its original behaviour exactly. A regional net has
+    no pair 400 km apart, so without the scaling every destination would be
+    rejected and the fallback would hand back coast-to-coast routes — the exact
+    thing regional scoping exists to prevent.
+    """
+    if len(waypoints) < 2:
+        return 0.0
+    lats = [wp[0] for wp in waypoints]
+    lons = [wp[1] for wp in waypoints]
+    span_km = _haversine_km(min(lats), min(lons), max(lats), max(lons))
+    return min(_NATIONWIDE_MIN_LEG_KM, 0.35 * span_km)
+
+
+def _pick_route(
+    center_lat: float,
+    center_lon: float,
+    max_dist_km: float = 300,
+    waypoints: list[tuple[float, float]] | None = None,
+) -> list[tuple[float, float]]:
     """Pick a sequence of 2-4 waypoints near center forming a realistic route."""
-    nearby = [wp for wp in _US_WAYPOINTS if _haversine_km(center_lat, center_lon, wp[0], wp[1]) < max_dist_km]
+    waypoints = waypoints if waypoints is not None else _US_WAYPOINTS
+    nearby = [wp for wp in waypoints if _haversine_km(center_lat, center_lon, wp[0], wp[1]) < max_dist_km]
     if len(nearby) < 2:
-        nearby = sorted(_US_WAYPOINTS, key=lambda wp: _haversine_km(center_lat, center_lon, wp[0], wp[1]))[:6]
+        nearby = sorted(waypoints, key=lambda wp: _haversine_km(center_lat, center_lon, wp[0], wp[1]))[:6]
 
     n_waypoints = random.randint(2, min(4, len(nearby)))
     start = random.choice(nearby)
@@ -256,9 +332,18 @@ def _pick_route(center_lat: float, center_lon: float, max_dist_km: float = 300) 
 class SimulationWorld:
     """Shared simulation world with aircraft and multiple observer nodes."""
 
-    def __init__(self, center_lat: float = 34.0, center_lon: float = -84.0):
+    def __init__(
+        self,
+        center_lat: float = 34.85,
+        center_lon: float = -82.39,
+        waypoints: list[tuple[float, float]] | None = None,
+    ):
         self.center_lat = center_lat
         self.center_lon = center_lon
+        # En-route waypoint net for background traffic. Defaults to the
+        # nationwide list; set a regional net (waypoints_for_metro) to keep
+        # background aircraft inside a metro-scoped fleet's coverage.
+        self.waypoints = waypoints if waypoints is not None else _US_WAYPOINTS
         self.aircraft: list[SimulatedAircraft] = []
         self.nodes: dict[str, NodeConfig] = {}
         self._next_id = 1
@@ -266,9 +351,21 @@ class SimulationWorld:
         # Target count range
         self.min_aircraft = 5
         self.max_aircraft = 15
-        # Object type spawn fractions (adjustable at runtime)
-        self.frac_anomalous: float = 0.05
-        self.frac_drone: float = 0.10
+        # Object type spawn fractions (adjustable at runtime).
+        # frac_anomalous doubles as the master gate for ALL anomaly generation:
+        # at 0 it also suppresses the mid-flight anomaly scheduler
+        # (_maybe_schedule_anomaly), which would otherwise keep turning normal
+        # commercial aircraft anomalous at its own hardcoded rate. One switch,
+        # so "anomalies off" means off — and raising it turns everything back on.
+        self.frac_anomalous: float = 0.0
+        # Drones off by default, matching the backend's simulation_config
+        # default (user call, 2026-08: fixed-wing scene only).  The old 0.10
+        # here spawned a handful of drones in the window between world
+        # construction and the first config poll on EVERY fleet restart —
+        # visible as "a few drones exist even with the slider at 0" until
+        # they aged out.  The orchestrator poll's absent-key fallback must
+        # stay matched to this value.
+        self.frac_drone: float = 0.0
         self.frac_dark: float = 0.15
         # remaining fraction = commercial aircraft with ADS-B
         # Hub-radial flight planning: when metro_cells is non-empty, this
@@ -278,6 +375,19 @@ class SimulationWorld:
         self.metro_cells: list[MetroCell] = []
         self.frac_metro_traffic: float = 0.6
         self.arrival_departure_overflight_weights = (0.45, 0.35, 0.20)
+        # Traffic separation.  Real traffic never stacks: terminal in-trail
+        # minima are ~3 NM and crossing flows are altitude-split, but the
+        # hub-radial planner converges every metro spawn on the same ~2 km
+        # core with no deconfliction at all, so the fleet routinely flew
+        # pairs inside the solver's association gates (delay gate ≈ 1-3 km)
+        # — making association ambiguity a property of the SIMULATOR, not of
+        # realistic traffic.  Two mechanisms, both gated on these knobs:
+        # spawn poses resample away from live traffic, and in-flight
+        # conflicts resolve by slowing the later-created aircraft
+        # (_enforce_separation).  A pair needs BOTH horizontal and vertical
+        # proximity to count as a conflict.
+        self.min_separation_km: float = 5.0
+        self.min_vertical_sep_km: float = 0.6  # ~2000 ft
 
     def add_node(self, config: NodeConfig):
         """Register a synthetic node in the simulation.
@@ -316,12 +426,14 @@ class SimulationWorld:
         return self._nationwide_pose()
 
     def _nationwide_pose(self) -> tuple[float, float, list]:
-        """Cross-country en-route traffic on the national waypoint net, spawned
-        anywhere along the leg (not just at airports) and independent of node
-        placement — the nationwide background that keeps the map alive."""
-        start = random.choice(_US_WAYPOINTS)
-        far = [wp for wp in _US_WAYPOINTS if _haversine_km(start[0], start[1], wp[0], wp[1]) > 400]
-        dest = random.choice(far or _US_WAYPOINTS)
+        """En-route traffic on self.waypoints, spawned anywhere along the leg (not
+        just at airports) and independent of node placement — the background that
+        keeps the map alive. Nationwide by default; regional under metro scoping."""
+        net = self.waypoints
+        start = random.choice(net)
+        min_leg = _min_leg_km(net)
+        far = [wp for wp in net if _haversine_km(start[0], start[1], wp[0], wp[1]) > min_leg]
+        dest = random.choice(far or net)
         t = random.uniform(0.0, 1.0)
         lat = start[0] + t * (dest[0] - start[0]) + random.gauss(0, 0.3)
         lon = start[1] + t * (dest[1] - start[1]) + random.gauss(0, 0.3)
@@ -376,25 +488,35 @@ class SimulationWorld:
             baseline_bearing = _bearing_deg(anchor.rx_lat, anchor.rx_lon, anchor.tx_lat, anchor.tx_lon)
             perp_rad = math.radians((baseline_bearing + 90.0) % 360.0)
             dist_km = random.uniform(5.0, anchor.max_range_km * 0.7)
-            anchor_lat = anchor.rx_lat + (dist_km * math.cos(perp_rad)) / 111.32
-            cos_lat = math.cos(math.radians(anchor.rx_lat))
-            anchor_lon = anchor.rx_lon + (dist_km * math.sin(perp_rad)) / (111.32 * max(cos_lat, 1e-6))
+            # R_EARTH-derived like every other conversion in this file — these
+            # were the last 111.32 literals, 0.11% off the rest of the sim.
+            anchor_lat, anchor_lon, _ = _enu_to_lla(
+                dist_km * math.sin(perp_rad),
+                dist_km * math.cos(perp_rad),
+                0.0,
+                anchor.rx_lat,
+                anchor.rx_lon,
+                0.0,
+            )
         else:
             anchor_lat, anchor_lon = self.center_lat, self.center_lon
 
         lat = anchor_lat + random.gauss(0, 0.03)
         lon = anchor_lon + random.gauss(0, 0.03)
-        route = [(lat, lon)] + _pick_route(anchor_lat, anchor_lon, max_dist_km=50)
+        route = [(lat, lon)] + _pick_route(anchor_lat, anchor_lon, max_dist_km=50, waypoints=self.waypoints)
         return lat, lon, route
 
     def _spawn_aircraft(self, mode: str = "detection") -> SimulatedAircraft:
         """Spawn a new aircraft along a realistic flight corridor.
 
-        Object types are selected probabilistically:
-          - 70% commercial aircraft (with ADS-B in adsb/anomalous modes)
-          - 15% dark aircraft (no ADS-B transponder)
-          - 10% drones (low/slow)
-          -  5% anomalous objects (erratic behavior)
+        Object types are selected probabilistically from the frac_* instance
+        attributes: dark aircraft (no transponder), drones (low/slow), anomalous
+        objects (erratic), and commercial aircraft with ADS-B as the remainder.
+        frac_anomalous defaults to 0 — see __init__.
+
+        mode="anomalous" is an explicit opt-in that injects anomalies regardless
+        of frac_anomalous; it is a testing mode and is not used by any deployment
+        (every compose profile sets FLEET_MODE=adsb).
         """
         oid = f"obj-{self._next_id:05d}"
         self._next_id += 1
@@ -417,7 +539,21 @@ class SimulationWorld:
         else:
             object_type = "aircraft"  # commercial — will get ADS-B in adsb modes
 
+        # Resample the spawn pose away from live traffic — best-effort, never
+        # fails: after the attempt budget the farthest candidate wins, so a
+        # saturated core degrades to "as separated as the planner could get"
+        # rather than blocking spawns (step() spawns in a while-loop up to
+        # min_aircraft; a hard reject there would spin forever).
         lat, lon, route = self._choose_spawn_pose()
+        best = (self._nearest_traffic_km(lat, lon), lat, lon, route)
+        for _ in range(9):
+            if best[0] >= self.min_separation_km:
+                break
+            lat, lon, route = self._choose_spawn_pose()
+            d = self._nearest_traffic_km(lat, lon)
+            if d > best[0]:
+                best = (d, lat, lon, route)
+        _, lat, lon, route = best
 
         if mode == "anomalous" and random.random() < 0.2:
             is_anomalous = True
@@ -436,7 +572,15 @@ class SimulationWorld:
 
         # Anomalous objects also get ADS-B — anomalous means unusual flight
         # behaviour (speed/altitude/heading changes), NOT transponder absence.
-        if mode in ("adsb", "anomalous") and object_type != "drone" and roll >= 0.30 or is_anomalous:
+        #
+        # The floor must be the SAME cumulative boundary the type roll used for
+        # "commercial" above. It was previously hardcoded to 0.30, which silently
+        # assumed the original defaults (0.05 + 0.10 + 0.15). Any other fractions
+        # — including anything set through the Physics Settings slider at
+        # runtime — pushed part of the commercial band below the literal, so
+        # those aircraft were spawned with no transponder and showed up as dark.
+        adsb_roll_floor = self.frac_anomalous + self.frac_drone + self.frac_dark
+        if (mode in ("adsb", "anomalous") and object_type != "drone" and roll >= adsb_roll_floor) or is_anomalous:
             has_adsb = True
             adsb_hex = f"{random.randint(0x100000, 0xFFFFFF):06x}"
             letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -461,6 +605,7 @@ class SimulationWorld:
             vel_up=vel_up,
             heading_deg=heading,
             speed_km_s=speed_km_s,
+            base_speed_km_s=speed_km_s,
             has_adsb=has_adsb,
             is_anomalous=is_anomalous,
             object_type=object_type,
@@ -473,12 +618,70 @@ class SimulationWorld:
             **self._maybe_schedule_anomaly(is_anomalous, object_type),
         )
 
+    # Expired aircraft are retired only once they are at least this far from
+    # the world center — a target vanishing overhead reads as a tracking bug
+    # on the map, so retirement happens off at the edges, beyond the ~60 km
+    # node coverage of a metro-scoped fleet.  (A nationwide fleet spawns most
+    # aircraft beyond this radius, which degrades to the old expire-anywhere
+    # behaviour — acceptable, nothing deployed runs unscoped.)
+    retire_edge_km: float = 70.0
+    # Extra flight time an expired aircraft gets to actually REACH the edge.
+    # Metro-routed traffic (85% of spawns) circulates inside the metro and
+    # rarely crosses retire_edge_km on its own, so under the old 2x-lifetime
+    # hard cap most of it still vanished mid-view — the edge gate only ever
+    # covered planes that happened to be leaving anyway.  On expiry the
+    # aircraft is now rerouted outward (_route_out) and 70 km at the slowest
+    # commercial speed (~0.1 km/s) is ~700 s, so 900 s means the backstop
+    # below fires only for genuinely stuck aircraft.
+    exit_grace_s: float = 900.0
+
+    def _route_out(self, ac: "SimulatedAircraft") -> None:
+        """Point an expired aircraft at the region edge and let it fly out.
+
+        Replaces the remaining route with one waypoint past retire_edge_km on
+        the bearing away from the world center (current heading when the
+        aircraft sits at the center itself), so retirement is something the
+        viewer watches happen at the edge instead of a dot blinking out.
+        """
+        if _haversine_km(self.center_lat, self.center_lon, ac.lat, ac.lon) > 1.0:
+            brg = _bearing_deg(self.center_lat, self.center_lon, ac.lat, ac.lon)
+        else:
+            brg = ac.heading_deg
+        dist_km = self.retire_edge_km + 15.0
+        brg_rad = math.radians(brg)
+        wp_lat = self.center_lat + dist_km * math.cos(brg_rad) / 111.32
+        wp_lon = self.center_lon + dist_km * math.sin(brg_rad) / (111.32 * math.cos(math.radians(self.center_lat)))
+        ac.waypoints = [(wp_lat, wp_lon)]
+        ac.waypoint_idx = 0
+        ac.departing = True
+
+    def _should_retire(self, ac: "SimulatedAircraft") -> bool:
+        age = self._time - ac.created_at
+        if age < ac.lifetime_s:
+            return False
+        if ac.object_type == "drone":
+            # Drones loop low and slow and are expected to churn; an amber
+            # X-frame vanishing reads as turnover, not a tracking bug.
+            if age > ac.lifetime_s * 2:
+                return True
+        elif age > ac.lifetime_s + self.exit_grace_s:
+            # Leak backstop only — a departing aircraft normally crosses the
+            # edge well inside the grace window.
+            return True
+        return _haversine_km(self.center_lat, self.center_lon, ac.lat, ac.lon) > self.retire_edge_km
+
     def step(self, dt: float, mode: str = "detection"):
         """Advance simulation by dt seconds."""
         self._time += dt
 
-        # Remove expired aircraft
-        self.aircraft = [ac for ac in self.aircraft if (self._time - ac.created_at) < ac.lifetime_s]
+        # Expired non-drones head for the edge before the retire filter sees
+        # them past the edge (see _route_out / _should_retire).
+        for ac in self.aircraft:
+            if not ac.departing and ac.object_type != "drone" and self._time - ac.created_at >= ac.lifetime_s:
+                self._route_out(ac)
+
+        # Retire expired aircraft (edge-gated — see _should_retire)
+        self.aircraft = [ac for ac in self.aircraft if not self._should_retire(ac)]
 
         # Spawn to maintain target count
         while len(self.aircraft) < self.min_aircraft:
@@ -490,13 +693,64 @@ class SimulationWorld:
         for ac in self.aircraft:
             self._update_aircraft(ac, dt)
 
+        self._enforce_separation(dt)
+
+    def _nearest_traffic_km(self, lat: float, lon: float) -> float:
+        """Horizontal distance to the closest live aircraft (inf when none).
+
+        Horizontal-only on purpose: spawn altitude is rolled after the pose,
+        so a vertical allowance here would be checked against a value that
+        does not exist yet — and a stricter horizontal-only bubble at spawn
+        costs nothing (the resample budget absorbs it)."""
+        if not self.aircraft:
+            return float("inf")
+        return min(_haversine_km(lat, lon, ac.lat, ac.lon) for ac in self.aircraft)
+
+    def _enforce_separation(self, dt: float):
+        """In-trail speed modulation: the later-created aircraft of any
+        conflicting pair slows toward 70% of cruise until the conflict clears,
+        then recovers toward cruise.
+
+        Speed-only, never heading: heading belongs to the waypoint router, and
+        a lateral dodge here would fight it every tick.  Slowing the trailer
+        resolves both in-trail stacking (the leader pulls away) and crossing
+        conflicts (the leader crosses first) — the same sequencing terminal
+        control actually applies.  Exemptions are the point, not an
+        optimisation: anomalous aircraft keep their erratic close approaches
+        (that proximity IS the signature the radar network exists to catch),
+        and drones live below min_vertical_sep_km of the jet flow anyway.
+        The blend is dt-based (~3 s time constant) so speed changes read as
+        throttle on the Doppler channel, not steps."""
+        flow = [ac for ac in self.aircraft if not ac.is_anomalous and ac.object_type == "aircraft"]
+        flow.sort(key=lambda ac: ac.created_at)
+        slowed: set[str] = set()
+        for i, trail in enumerate(flow):
+            for lead in flow[:i]:
+                if abs(lead.alt_km - trail.alt_km) >= self.min_vertical_sep_km:
+                    continue
+                if _haversine_km(lead.lat, lead.lon, trail.lat, trail.lon) < self.min_separation_km:
+                    slowed.add(trail.object_id)
+                    break
+        blend = 1.0 - math.exp(-dt / 3.0)
+        for ac in flow:
+            base = ac.base_speed_km_s or ac.speed_km_s
+            target = base * 0.7 if ac.object_id in slowed else base
+            ac.speed_km_s += (target - ac.speed_km_s) * blend
+
     # ── Mid-flight anomaly scheduling ────────────────────────────────────────
 
     _ANOMALY_EVENTS = ["hijack", "spoof", "orbit", "altitude_jump", "id_swap"]
 
     def _maybe_schedule_anomaly(self, is_anomalous: bool, object_type: str) -> dict:
         """Return kwargs to schedule a mid-flight anomaly event on ~8% of
-        normal commercial aircraft.  Already-anomalous or drones are skipped."""
+        normal commercial aircraft.  Already-anomalous or drones are skipped.
+
+        Gated on frac_anomalous: this rate is larger than the spawn-time
+        fraction, so without the gate, zeroing frac_anomalous would still leave
+        the majority of anomalies running (they just appear 30-120s late).
+        """
+        if self.frac_anomalous <= 0:
+            return {}
         if is_anomalous or object_type == "drone":
             return {}
         if random.random() > 0.08:
@@ -524,8 +778,17 @@ class SimulationWorld:
         ac.lat += dlat
         ac.lon += dlon
         ac.alt_km += ac.vel_up * dt
+        # Level off: vel_up was set once at spawn and integrated forever, so
+        # every aircraft eventually saturated against the altitude clamps —
+        # the whole fleet ended up pinned to the floor or the ceiling.  Unlike
+        # vel_east/north (recomputed from heading each tick), there is no
+        # vertical navigation, so decay toward level flight with a ~5 min
+        # time constant and stop climbing at the clamp.
+        ac.vel_up *= math.exp(-dt / 300.0)
 
         # Clamp altitude
+        if ac.alt_km <= 0.1 or ac.alt_km >= 15.0:
+            ac.vel_up = 0.0
         ac.alt_km = max(0.1, min(ac.alt_km, 15.0))
 
         # ── Orbit anomaly: circle in place instead of following waypoints ────
@@ -624,10 +887,45 @@ class SimulationWorld:
             ac.speed_km_s = random.uniform(0.35, 0.50)
 
     def _aircraft_in_detection_cone(self, ac: SimulatedAircraft, node: NodeConfig) -> bool:
-        """Check if aircraft is within the node's detection cone."""
-        dist = _haversine_km(node.rx_lat, node.rx_lon, ac.lat, ac.lon)
-        if dist > node.max_range_km:
-            return False
+        """Check if aircraft is within the node's detection cone.
+
+        Range is limited on *bistatic* range when the node declares one — the
+        sum of both legs minus the baseline, which is what the delay actually
+        measures and what sets received power.  A monostatic RX-distance limit
+        ignores the TX leg entirely, so it accepts targets far behind the
+        transmitter and rejects near ones on a long baseline.  Nodes without
+        max_bistatic_range_km keep the monostatic rule so real hardware is
+        unaffected.
+        """
+        if node.max_bistatic_range_km is not None:
+            rx_alt_km = node.rx_alt_ft * 0.3048 / 1000.0
+            tx_alt_km = node.tx_alt_ft * 0.3048 / 1000.0
+            target_enu = _lla_to_enu(
+                ac.lat,
+                ac.lon,
+                ac.alt_km,
+                node.rx_lat,
+                node.rx_lon,
+                rx_alt_km,
+            )
+            tx_enu = _lla_to_enu(
+                node.tx_lat,
+                node.tx_lon,
+                tx_alt_km,
+                node.rx_lat,
+                node.rx_lon,
+                rx_alt_km,
+            )
+            # _bistatic_delay returns the differential range in µs; multiply
+            # back by c to compare in km.  Reused rather than recomputing the
+            # two legs so the gate and the emitted delay can never disagree.
+            diff_range_km = _bistatic_delay(target_enu, tx_enu, (0.0, 0.0, 0.0)) * C_KM_US
+            if diff_range_km > node.max_bistatic_range_km:
+                return False
+        else:
+            dist = _haversine_km(node.rx_lat, node.rx_lon, ac.lat, ac.lon)
+            if dist > node.max_range_km:
+                return False
 
         bearing = _bearing_deg(node.rx_lat, node.rx_lon, ac.lat, ac.lon)
         angle_diff = abs((bearing - node.beam_azimuth_deg + 180) % 360 - 180)
@@ -770,6 +1068,8 @@ class SimulationWorld:
                 "is_anomalous": ac.is_anomalous,
                 "object_type": ac.object_type,
                 "adsb_hex": ac.adsb_hex,
+                "adsb_callsign": ac.adsb_callsign,
+                "anomaly_event": ac.anomaly_event,
             }
             for ac in self.aircraft
         ]

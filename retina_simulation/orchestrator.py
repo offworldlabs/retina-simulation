@@ -32,11 +32,20 @@ import ssl
 import time
 from datetime import datetime, timezone
 
-from retina_simulation.generator import coverage_cells, fleet_summary, generate_fleet
-from retina_simulation.tower_resolver import apply_tower_assignments, resolve_towers
-
 # Add parent dir so we can import simulation packages
-from retina_simulation.world import MetroCell, NodeConfig, SimulationWorld
+from retina_simulation.generator import (
+    _KNOWN_METROS,
+    coverage_cells,
+    fleet_summary,
+    generate_fleet,
+)
+from retina_simulation.tower_resolver import apply_tower_assignments, resolve_towers
+from retina_simulation.world import (
+    MetroCell,
+    NodeConfig,
+    SimulationWorld,
+    waypoints_for_metro,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -237,9 +246,11 @@ class FleetOrchestrator:
         hub_radial: bool = True,
         metro_traffic_frac: float = 0.6,
         cells: list[dict] | None = None,
+        metro: str | None = None,
     ):
         self.node_configs = node_configs
         self.cells = cells or []
+        self.metro = metro
         self.host = host
         self.port = port
         self.mode = mode
@@ -278,13 +289,22 @@ class FleetOrchestrator:
         center_lat = sum(lats) / len(lats)
         center_lon = sum(lons) / len(lons)
 
-        self.world = SimulationWorld(center_lat=center_lat, center_lon=center_lon)
-        # Aircraft population is a nationwide field (alive map), independent of
-        # sensor count — floor it high so the whole US stays populated, not just
-        # the metros. --min-aircraft/--max-aircraft override.
+        self.world = SimulationWorld(
+            center_lat=center_lat,
+            center_lon=center_lon,
+            waypoints=waypoints_for_metro(self.metro),
+        )
+        # Aircraft population is a field, not a per-sensor count. Nationwide it is
+        # floored high so the whole US stays populated; a metro-scoped fleet covers
+        # ~1/40th of that area, so the same floor would pack hundreds of aircraft
+        # into one terminal area. --min-aircraft/--max-aircraft override either way.
         n = len(self.node_configs)
-        auto_min_aircraft = max(150, n // 2)
-        auto_max_aircraft = max(300, n)
+        if self.metro:
+            auto_min_aircraft = max(15, n // 2)
+            auto_max_aircraft = max(30, n)
+        else:
+            auto_min_aircraft = max(150, n // 2)
+            auto_max_aircraft = max(300, n)
         self.world.min_aircraft = self.min_aircraft or auto_min_aircraft
         self.world.max_aircraft = self.max_aircraft or auto_max_aircraft
         if self.world.max_aircraft < self.world.min_aircraft:
@@ -309,9 +329,13 @@ class FleetOrchestrator:
                 tx_alt_ft=cfg["tx_alt_ft"],
                 fc_hz=cfg["fc_hz"],
                 fs_hz=cfg.get("fs_hz", 2_000_000),
-                beam_width_deg=self.beam_width_deg or cfg.get("beam_width_deg", 40),
+                beam_width_deg=self.beam_width_deg or cfg.get("beam_width_deg", 42),
                 max_range_km=self.max_range_km or cfg.get("max_range_km", 50),
                 beam_azimuth_deg=cfg.get("beam_azimuth_deg"),  # None → broadside in add_node
+                # Without this the world falls back to the monostatic RX-radius
+                # rule while the handshake tells the server the bistatic limit —
+                # nodes then "detect" 1.6x beyond what the server will accept.
+                max_bistatic_range_km=cfg.get("max_bistatic_range_km"),
             )
             self.world.add_node(node)
 
@@ -320,13 +344,15 @@ class FleetOrchestrator:
             self.world.frac_metro_traffic = self.metro_traffic_frac
 
         log.info(
-            "SimulationWorld: center=(%.2f, %.2f), %d nodes, %d-%d aircraft, %d metro cells",
+            "SimulationWorld: center=(%.2f, %.2f), %d nodes, %d-%d aircraft, %d metro cells, waypoint net=%s (%d)",
             center_lat,
             center_lon,
             len(self.node_configs),
             self.world.min_aircraft,
             self.world.max_aircraft,
             len(self.world.metro_cells),
+            self.metro or "nationwide",
+            len(self.world.waypoints),
         )
 
     async def _connect_batch(self, configs: list[dict]) -> list[dict]:
@@ -642,6 +668,35 @@ class FleetOrchestrator:
         log.info("Ground truth saved: %s (%d snapshots)", path, len(self.ground_truth))
 
 
+def build_ground_truth_payload(aircraft_summaries: list[dict]) -> list[dict]:
+    """Remap world aircraft summaries to the server ground-truth push schema.
+
+    Dark objects have no ADS-B hex, so their stable object id doubles as the
+    ground-truth key; entries with neither are unidentifiable and dropped.
+    """
+    payload_aircraft = []
+    for ac in aircraft_summaries:
+        hex_code = ac.get("adsb_hex") or ac.get("id", "")
+        if not hex_code:
+            continue
+        payload_aircraft.append(
+            {
+                "hex": hex_code,
+                "lat": ac["lat"],
+                "lon": ac["lon"],
+                "alt_m": ac["alt_km"] * 1000,
+                "heading": ac.get("heading", 0),
+                "speed_ms": ac.get("speed_ms", 0),
+                "object_type": ac.get("object_type", "aircraft"),
+                "is_anomalous": ac.get("is_anomalous", False),
+                "has_adsb": ac.get("has_adsb", False),
+                "adsb_callsign": ac.get("adsb_callsign") or None,
+                "anomaly_event": ac.get("anomaly_event") or None,
+            }
+        )
+    return payload_aircraft
+
+
 async def _push_ground_truth_live(
     orchestrator: FleetOrchestrator,
     base_url: str,
@@ -669,24 +724,7 @@ async def _push_ground_truth_live(
 
         try:
             aircraft = orchestrator.world.get_aircraft_summary()
-            # Remap field names to what the server endpoint expects
-            payload_aircraft = []
-            for ac in aircraft:
-                hex_code = ac.get("adsb_hex") or ac.get("id", "")
-                if not hex_code:
-                    continue
-                payload_aircraft.append(
-                    {
-                        "hex": hex_code,
-                        "lat": ac["lat"],
-                        "lon": ac["lon"],
-                        "alt_m": ac["alt_km"] * 1000,
-                        "heading": ac.get("heading", 0),
-                        "speed_ms": ac.get("speed_ms", 0),
-                        "object_type": ac.get("object_type", "aircraft"),
-                        "is_anomalous": ac.get("is_anomalous", False),
-                    }
-                )
+            payload_aircraft = build_ground_truth_payload(aircraft)
 
             if payload_aircraft:
                 body = json.dumps(
@@ -802,8 +840,19 @@ async def _poll_simulation_config(
     orchestrator: FleetOrchestrator,
     base_url: str,
     interval_s: float = 5.0,
+    scene: dict | None = None,
 ):
-    """Poll /api/simulation/config every interval_s and apply updated spawn fractions to world."""
+    """Poll /api/simulation/config every interval_s and apply updated spawn fractions to world.
+
+    Also watches for a scene change (n_nodes / dual_fraction): those are
+    baked into the fleet at container boot (see generator.py), so unlike the
+    spawn fractions above they cannot be applied in-process. When ``scene``
+    (this container's own stamped {n_nodes, dual_fraction, layout, seed}) is
+    present and differs from what the backend now reports, this logs a loud
+    WARN and calls ``orchestrator.stop()`` — every loop then exits, the
+    process exits 0, and `restart: unless-stopped` relaunches into
+    fleet-entrypoint.sh, which fetches the desired scene before regenerating.
+    """
     import urllib.request
 
     log.info("Simulation config polling started (url=%s, interval=%.1fs)", base_url, interval_s)
@@ -831,8 +880,10 @@ async def _poll_simulation_config(
             cfg = await loop.run_in_executor(None, _fetch)
             updated_at = cfg.get("_updated_at", 0.0)
             if updated_at > last_updated_at:
-                orchestrator.world.frac_anomalous = float(cfg.get("frac_anomalous", 0.05))
-                orchestrator.world.frac_drone = float(cfg.get("frac_drone", 0.10))
+                # Fallback matches SimulationWorld's default (anomalies off), so a
+                # payload missing the key cannot silently switch them back on.
+                orchestrator.world.frac_anomalous = float(cfg.get("frac_anomalous", 0.0))
+                orchestrator.world.frac_drone = float(cfg.get("frac_drone", 0.0))
                 orchestrator.world.frac_dark = float(cfg.get("frac_dark", 0.15))
                 if "min_aircraft" in cfg:
                     orchestrator.world.min_aircraft = int(cfg["min_aircraft"])
@@ -847,6 +898,44 @@ async def _poll_simulation_config(
                     orchestrator.world.min_aircraft,
                     orchestrator.world.max_aircraft,
                 )
+
+                # Scene-change detection. Absent scene stamp (stale volume,
+                # in-process generation) or absent config keys (never PUT) →
+                # no comparison, no restart.
+                scene_n_nodes = scene.get("n_nodes") if scene else None
+                scene_dual_fraction = scene.get("dual_fraction") if scene else None
+                scene_diff = False
+                if scene:
+                    if "n_nodes" in cfg and scene_n_nodes is not None and int(cfg["n_nodes"]) != int(scene_n_nodes):
+                        scene_diff = True
+                    if (
+                        "dual_fraction" in cfg
+                        and scene_dual_fraction is not None
+                        and abs(float(cfg["dual_fraction"]) - float(scene_dual_fraction)) > 1e-6
+                    ):
+                        scene_diff = True
+                # max_range_km needs no stamp: the orchestrator itself holds
+                # the running value, so this runs even when `scene` is None.
+                # Applying a range change requires regenerating node configs
+                # (every node's cfg is built from it at construction), which
+                # is exactly the restart path — the poll loop deliberately
+                # does NOT live-apply it.
+                if "max_range_km" in cfg and abs(float(cfg["max_range_km"]) - float(orchestrator.max_range_km)) > 1e-6:
+                    scene_diff = True
+                if scene_diff:
+                    log.warning(
+                        "Scene change requested (n_nodes=%s dual_fraction=%s "
+                        "max_range_km=%s, running n_nodes=%s dual_fraction=%s "
+                        "max_range_km=%s) — shutting down for regeneration",
+                        cfg.get("n_nodes"),
+                        cfg.get("dual_fraction"),
+                        cfg.get("max_range_km"),
+                        scene_n_nodes,
+                        scene_dual_fraction,
+                        orchestrator.max_range_km,
+                    )
+                    await orchestrator.stop()
+                    return
         except Exception as e:
             log.debug("Config poll failed: %s", e)
 
@@ -984,21 +1073,6 @@ async def _validate_against_server(
             log.debug("Validation check failed: %s", e)
 
 
-# ── Predefined metro areas ──────────────────────────────────────────────────
-_KNOWN_METROS = {
-    "atl": {"name": "Atlanta", "lat": 33.749, "lon": -84.388, "radius_nm": 80},
-    "gvl": {"name": "Greenville", "lat": 34.852, "lon": -82.394, "radius_nm": 60},
-    "clt": {"name": "Charlotte", "lat": 35.227, "lon": -80.843, "radius_nm": 70},
-    "nyc": {"name": "New York", "lat": 40.748, "lon": -73.986, "radius_nm": 80},
-    "dca": {"name": "Washington DC", "lat": 38.935, "lon": -77.079, "radius_nm": 70},
-    "chi": {"name": "Chicago", "lat": 41.872, "lon": -87.624, "radius_nm": 80},
-    "den": {"name": "Denver", "lat": 39.739, "lon": -104.990, "radius_nm": 80},
-    "lax": {"name": "Los Angeles", "lat": 34.052, "lon": -118.244, "radius_nm": 80},
-    "dfw": {"name": "Dallas-Fort Worth", "lat": 32.897, "lon": -97.038, "radius_nm": 80},
-    "kc": {"name": "Kansas City", "lat": 39.298, "lon": -94.714, "radius_nm": 70},
-}
-
-
 def _parse_metro_areas(metros_str: str) -> list[dict]:
     """Parse comma-separated metro codes into area dicts for AdsbLolClient."""
     result = []
@@ -1014,6 +1088,15 @@ def _parse_metro_areas(metros_str: str) -> list[dict]:
 async def main_async(args):
     """Main async entry point."""
     # Load or generate fleet config
+    # Scene stamp (n_nodes/dual_fraction/layout/seed) the generator wrote into
+    # the config it produced — read here so _poll_simulation_config can detect
+    # a backend-requested scene change and self-restart for regeneration.
+    # Only ever populated via the loaded-config-file path: fleet-entrypoint.sh
+    # always runs the generator CLI (which stamps it) before starting us with
+    # --config. None here means "no comparison" — a stale volume with no
+    # stamp, or the in-process generation fallback below, never triggers a
+    # restart loop.
+    scene = None
     if args.config and os.path.exists(args.config):
         with open(args.config) as f:
             data = json.load(f)
@@ -1022,6 +1105,7 @@ async def main_async(args):
             # Fallback: maybe it's the old nodes_config.json format
             all_nodes = data.get("nodes", [])
         cells = data.get("cells", [])
+        scene = data.get("fleet", {}).get("scene")
     else:
         log.info("No config file, generating %d nodes...", args.nodes)
         regions = [r.strip() for r in args.regions.split(",")]
@@ -1031,8 +1115,14 @@ async def main_async(args):
             seed=args.seed,
             n_cluster=args.n_cluster,
             n_clusters=args.n_clusters,
+            metro=getattr(args, "metro", None),
         )
-        cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters)
+        cells = coverage_cells(
+            n_cluster=args.n_cluster,
+            n_clusters=args.n_clusters,
+            metro=getattr(args, "metro", None),
+            layout=getattr(args, "layout", "ring"),
+        )
 
     # When --metros is specified, filter nodes to only those near selected metros
     if getattr(args, "metros", "") and args.metros:
@@ -1091,6 +1181,7 @@ async def main_async(args):
         hub_radial=not args.no_hub_radial,
         metro_traffic_frac=args.metro_traffic_frac,
         cells=cells,
+        metro=getattr(args, "metro", None),
     )
 
     # Build shared simulation world
@@ -1143,12 +1234,16 @@ async def main_async(args):
                 orchestrator,
                 args.validation_url,
                 interval_s=5.0,
+                scene=scene,
             )
         )
 
     # Real ADS-B from adsb.lol — inject real air traffic when metro areas are configured.
-    if args.validation_url and hasattr(args, "metros") and args.metros:
-        metro_areas = _parse_metro_areas(args.metros)
+    # --metro (generation-time scoping) implies the same area for real traffic, so a
+    # Greenville-only fleet gets Greenville ADS-B without also passing --metros.
+    adsb_metros = getattr(args, "metros", "") or getattr(args, "metro", "") or ""
+    if args.validation_url and adsb_metros:
+        metro_areas = _parse_metro_areas(adsb_metros)
         if metro_areas:
             tasks.append(
                 _push_real_adsb(
@@ -1210,7 +1305,8 @@ def main():
         default=5,
         help="Number of distinct metro rings to fan the --n-cluster budget "
         "across (5 = Dallas, Chicago, Atlanta, Denver, Kansas City; "
-        "1 = single Dallas ring). Matches the generator default.",
+        "1 = single Dallas ring). Capped at the number of rings that "
+        "survive --metro. Matches the generator default.",
     )
     parser.add_argument("--host", type=str, default="localhost", help="Server hostname")
     parser.add_argument("--port", type=int, default=3012, help="Server TCP port")
@@ -1247,11 +1343,21 @@ def main():
         "--ground-truth-path", type=str, default="ground_truth.json", help="Path to save ground truth data"
     )
     parser.add_argument(
+        "--metro",
+        type=str,
+        default=None,
+        choices=sorted(_KNOWN_METROS),
+        help="Generate the whole fleet inside one metro area (drops "
+        "solo/rural nodes and non-local rings). Applies at "
+        "generation time, so it needs no --config.",
+    )
+    parser.add_argument(
         "--metros",
         type=str,
         default="",
         help="Comma-separated metro codes to focus on (e.g. atl,gvl). "
-        "Filters fleet to these metros and injects real ADS-B from adsb.lol. "
+        "Filters an already-generated fleet to these metros and "
+        "injects real ADS-B from adsb.lol. "
         f"Available: {','.join(_KNOWN_METROS.keys())}",
     )
     parser.add_argument(

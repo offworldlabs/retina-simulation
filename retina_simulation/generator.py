@@ -20,6 +20,26 @@ from dataclasses import asdict, dataclass
 # Each tower: (lat, lon, alt_ft, freq_hz, callsign)
 # Modeled after real VHF/UHF broadcast transmitters suitable for passive radar
 
+# Effective radiated power, dBm, keyed by callsign.  Kept beside the tower
+# tuples rather than inside them so the 5-element unpacking used throughout
+# this module stays valid.  Only populated for sites taken from real FCC
+# records; illuminator selection falls back to _DEFAULT_EIRP_DBM otherwise.
+#
+# The spread here is 65 dB — Caesars Head at 92.2 dBm against Spartanburg at
+# 27.0 — so a fleet that ignores EIRP treats a 0.5 W transmitter as the equal
+# of a megawatt one.
+_TOWER_EIRP_DBM = {
+    "WYFF": 92.2,  # Caesars Head
+    "WMYA-TV": 90.9,  # Fountain Inn
+    "WNTV": 84.7,  # Paris Mountain — Tower Finder's top pick for the metro
+    "WLOS": 83.7,  # Mt Pisgah
+    "WSPA-TV": 77.4,  # Hogback Mtn
+    "BLP00776": 57.0,  # near the core, low power
+    "W07DT-D": 50.0,  # Tryon NC
+    "BLP01065": 27.0,  # Spartanburg — geometrically valuable, radiologically weak
+}
+_DEFAULT_EIRP_DBM = 80.0
+
 _TOWERS_US = [
     # East Coast
     (33.75667, -84.33184, 1600, 195_000_000, "WSB-TV"),  # Atlanta
@@ -34,6 +54,22 @@ _TOWERS_US = [
     (30.33270, -81.65560, 1200, 575_000_000, "WJXT"),  # Jacksonville
     (36.85260, -75.97820, 1300, 539_000_000, "WAVY"),  # Norfolk
     (35.78700, -78.78170, 1500, 563_000_000, "WRAL"),  # Raleigh
+    # ── Greenville SC ────────────────────────────────────────────────────────
+    # Real FCC facilities from the Tower Finder illuminator search, one entry
+    # per *distinct site*.  Twenty stations serve this market but they share
+    # only eight masts — Paris Mountain alone carries WNTV, WRET-TV, WGGS-TV,
+    # W10AJ-D and five LPTVs.  Co-sited transmitters are worthless as a
+    # bistatic pair (identical geometry, identical ellipse), so the table lists
+    # sites and the strongest station at each.
+    # alt is the radiating centre AMSL (ground + antenna height), in feet.
+    (34.941222, -82.410278, 3315, 183_000_000, "WNTV"),  # Paris Mountain
+    (34.647500, -82.270000, 1847, 599_000_000, "WMYA-TV"),  # Fountain Inn — south
+    (35.170194, -82.290500, 5437, 201_000_000, "WSPA-TV"),  # Hogback Mtn
+    (35.111944, -82.606389, 5058, 569_000_000, "WYFF"),  # Caesars Head
+    (35.222222, -82.549444, 5220, 213_000_000, "WLOS"),  # Mt Pisgah
+    (34.970111, -81.948391, 794, 195_000_000, "BLP01065"),  # Spartanburg — east
+    (35.266278, -82.244111, 3186, 177_000_000, "W07DT-D"),  # Tryon NC
+    (34.875111, -82.338211, 984, 183_000_000, "BLP00776"),  # near the core
     # Midwest
     (41.87150, -87.62440, 1650, 191_000_000, "WBBM-TV"),  # Chicago
     (42.33140, -83.04580, 1200, 551_000_000, "WXYZ-TV"),  # Detroit
@@ -154,7 +190,32 @@ _RING_TXS = [
     (33.74900, -84.38800, 1050, 199_000_000, "WSB-RING", 33.6407, -84.4277),  # ATL
     (39.73920, -104.99030, 5300, 201_000_000, "KCNC-RING", 39.8561, -104.6737),  # DEN
     (39.09970, -94.57860, 900, 203_000_000, "KMBC-RING", 39.2976, -94.7139),  # MCI Kansas City
+    # WSPA-TV, RF ch 11 (201 MHz) on Hogback Mtn, 31 km NNW of GSP.  It shares
+    # 201 MHz with the DEN ring above, which is harmless: rings never overlap
+    # geographically.  (An earlier version of this note said the market had no
+    # other VHF station — it has several; see _TOWERS_US.  The ring uses this
+    # one because it is the strongest VHF site with a clear line to the core.)
+    (35.170194, -82.290500, 5437, 201_000_000, "WSPA-RING", 34.8957, -82.2189),  # GSP Greenville SC
 ]
+
+
+# ── Metro areas ───────────────────────────────────────────────────────────────
+# Shared by the generator's --metro scoping and the orchestrator's --metros
+# post-generation filter, so the two can never disagree about where a metro is.
+_KNOWN_METROS = {
+    "atl": {"name": "Atlanta", "lat": 33.749, "lon": -84.388, "radius_nm": 80},
+    "gvl": {"name": "Greenville", "lat": 34.852, "lon": -82.394, "radius_nm": 60},
+    "clt": {"name": "Charlotte", "lat": 35.227, "lon": -80.843, "radius_nm": 70},
+    "nyc": {"name": "New York", "lat": 40.748, "lon": -73.986, "radius_nm": 80},
+    "dca": {"name": "Washington DC", "lat": 38.935, "lon": -77.079, "radius_nm": 70},
+    "chi": {"name": "Chicago", "lat": 41.872, "lon": -87.624, "radius_nm": 80},
+    "den": {"name": "Denver", "lat": 39.739, "lon": -104.990, "radius_nm": 80},
+    "lax": {"name": "Los Angeles", "lat": 34.052, "lon": -118.244, "radius_nm": 80},
+    "dfw": {"name": "Dallas-Fort Worth", "lat": 32.897, "lon": -97.038, "radius_nm": 80},
+    "kc": {"name": "Kansas City", "lat": 39.298, "lon": -94.714, "radius_nm": 70},
+}
+
+_NM_TO_KM = 1.852
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -252,23 +313,31 @@ class GeneratedNodeConfig:
     tx_alt_ft: float
     fc_hz: float
     fs_hz: float = 2_000_000.0
-    beam_width_deg: float = 40.0
+    beam_width_deg: float = 42.0
     max_range_km: float = 50.0
     region: str = "us"
     tx_callsign: str = ""
     beam_azimuth_deg: float | None = None  # explicit Yagi aim; None → broadside
+    # Bistatic range limit: (RX→target) + (target→TX) − baseline.  That sum is
+    # what the delay measures and what sets received power, so it is the
+    # physical detection limit; max_range_km is a monostatic approximation
+    # retained for hardware nodes.  None → omitted from the wire format.
+    max_bistatic_range_km: float | None = None
 
 
 def _node_dict(node: GeneratedNodeConfig) -> dict:
-    """Serialize a node, omitting an unset beam_azimuth_deg.
+    """Serialize a node, omitting unset optional geometry keys.
 
     The backend solver does `float(node_cfg["beam_azimuth_deg"])` whenever the
     key is present, so a null on the wire would crash it. Dropping the key for
     broadside nodes makes the backend fall back to its own broadside auto-aim.
+    max_bistatic_range_km is dropped for the same reason and so that its
+    absence unambiguously means "use the monostatic rule".
     """
     d = asdict(node)
-    if d.get("beam_azimuth_deg") is None:
-        d.pop("beam_azimuth_deg", None)
+    for _optional in ("beam_azimuth_deg", "max_bistatic_range_km"):
+        if d.get(_optional) is None:
+            d.pop(_optional, None)
     return d
 
 
@@ -623,6 +692,266 @@ def _place_rx_on_land(
     return (round(tx_lat, 6), round(tx_lon, 6))
 
 
+def _subtended_deg(from_lat, from_lon, a, b) -> float:
+    """Angle between two towers as seen from a point, in degrees.
+
+    This — not the towers' bearing separation from the metro centre — is what
+    conditions a two-illuminator fix.  The bistatic range gradient is
+    b = u_tx + u_rx, so two measurements are independent to the extent their
+    transmitters lie in different directions *from the target*.  Two towers on
+    a similar bearing from the metro core but far apart in range still subtend
+    a usable angle across most of the coverage area.
+    """
+    ba = _bearing_between(from_lat, from_lon, a[0], a[1])
+    bb = _bearing_between(from_lat, from_lon, b[0], b[1])
+    return abs((ba - bb + 180.0) % 360.0 - 180.0)
+
+
+def _beam_footprint(rx_lat, rx_lon, beam_azimuth_deg, beam_width_deg, max_range_km):
+    """Sample points across a receiver's beam, for evaluating pair geometry.
+
+    Deliberately samples the *edges* as well as the centre: a pair can condition
+    well at boresight and collapse at the beam edge, and selecting on a single
+    representative point would bake that blind spot in.
+    """
+    R = 6371.0
+    pts = []
+    half = beam_width_deg / 2.0
+    for frac in (0.35, 0.7, 1.0):
+        for off in (-half, -half / 2, 0.0, half / 2, half):
+            br = math.radians((beam_azimuth_deg + off) % 360.0)
+            d = max_range_km * frac
+            pts.append(
+                (
+                    rx_lat + math.degrees((d * math.cos(br)) / R),
+                    rx_lon + math.degrees((d * math.sin(br)) / (R * math.cos(math.radians(rx_lat)))),
+                )
+            )
+    return pts
+
+
+def _pick_illuminator_pair(rx_lat, rx_lon, beam_azimuth_deg, beam_width_deg, max_range_km, towers, min_eirp_dbm):
+    """Choose the two towers giving the best-conditioned pair for this receiver.
+
+    Scored on the *worst* subtended angle across the beam footprint rather than
+    the mean, because a pair that degenerates anywhere in the footprint is
+    unreliable there.  Towers are already one-per-site in _TOWERS_US; co-sited
+    transmitters would share an ellipse and be worthless as a pair.
+
+    Returns (tower_a, tower_b) or None when nothing clears min_eirp_dbm.
+    """
+    usable = [t for t in towers if _TOWER_EIRP_DBM.get(t[4], _DEFAULT_EIRP_DBM) >= min_eirp_dbm]
+    if len(usable) < 2:
+        return None
+    probes = _beam_footprint(rx_lat, rx_lon, beam_azimuth_deg, beam_width_deg, max_range_km)
+    best, best_score = None, -1.0
+    for i in range(len(usable)):
+        for j in range(i + 1, len(usable)):
+            a, b = usable[i], usable[j]
+            if _haversine_km(a[0], a[1], b[0], b[1]) < 1.0:
+                continue  # same mast
+            worst = min(_subtended_deg(p[0], p[1], a, b) for p in probes)
+            if worst > best_score:
+                best, best_score = (a, b), worst
+    return best
+
+
+def _generate_dual_sites(
+    n_sites: int,
+    core_lat: float,
+    core_lon: float,
+    towers: list[tuple],
+    metro_radius_km: float,
+    prefix: str = "synth-GVL",
+    beam_width_deg: float = 42.0,
+    max_bistatic_range_km: float = 60.0,
+    min_eirp_dbm: float = 40.0,
+    aim: str = "core",
+    aim_jitter_deg: float = 30.0,
+) -> list[dict]:
+    """Generate n_sites receivers, each running two nodes on two illuminators.
+
+    This is how a real passive-radar site is built: one antenna, one RX
+    position, several receiver chains tuned to different transmitters.  The two
+    nodes therefore share rx position, altitude, beam azimuth, beam width and
+    range — they differ only in which tower they listen to.
+
+    The geometric payoff is that the two bistatic ellipses share a focus (the
+    common RX), so they intersect in at most two points and the beam almost
+    always excludes one.  A single site localises on its own, with the residual
+    ambiguity bounded by the antenna pattern rather than by a second receiver
+    tens of km away.
+
+    Position is well determined this way; velocity is not.  One pair gives two
+    Doppler projections for three velocity components, so it stays
+    under-determined unless the level-flight assumption is applied (which the
+    association stage does).  Two pairs — four nodes — give eight residuals
+    against five unknowns, and only then do the solver's residual gates regain
+    the discriminating power they lack at n=2.
+
+    Sites are placed at random across the metro rather than ringed around a
+    core, so their beams overlap each other far less than a ring's do.
+    """
+    if n_sites <= 0 or len(towers) < 2:
+        return []
+
+    nodes = []
+    for i in range(n_sites):
+        node_id = f"{prefix}-{i + 1:04d}"
+        rx_lat, rx_lon = _place_rx_on_land(
+            core_lat,
+            core_lon,
+            dist_min_km=5.0,
+            dist_max_km=max(10.0, metro_radius_km * 0.85),
+            display_node_id=node_id,
+        )
+        # Aim.  "random" spreads sectors and minimises inter-site overlap, but
+        # a beam pointed away from the traffic sees nothing: with 85% of
+        # aircraft routed through the metro core, random aiming left most sites
+        # idle and collapsed the solve rate by an order of magnitude.
+        #
+        # "core" aims at the core with jitter, which is also what a real
+        # operator would do — receivers are sited to cover the airspace of
+        # interest.  Inter-site overlap is not the enemy here the way it is for
+        # a ring: each dual site already self-solves from its own two
+        # illuminators, so a second site overlapping it upgrades the fix to
+        # four nodes rather than manufacturing a two-node ambiguity.
+        if aim == "random":
+            beam_azimuth = random.uniform(0.0, 360.0)
+        else:
+            beam_azimuth = (
+                _bearing_between(rx_lat, rx_lon, core_lat, core_lon) + random.uniform(-aim_jitter_deg, aim_jitter_deg)
+            ) % 360.0
+        pair = _pick_illuminator_pair(
+            rx_lat,
+            rx_lon,
+            beam_azimuth,
+            beam_width_deg,
+            max_bistatic_range_km,
+            towers,
+            min_eirp_dbm,
+        )
+        if pair is None:
+            continue
+        rx_alt_ft = round(random.uniform(100, 1500), 1)
+        for suffix, tower in zip("ab", pair):
+            tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
+            node = GeneratedNodeConfig(
+                node_id=f"{node_id}{suffix}",
+                rx_lat=round(rx_lat, 6),
+                rx_lon=round(rx_lon, 6),
+                rx_alt_ft=rx_alt_ft,
+                tx_lat=tx_lat,
+                tx_lon=tx_lon,
+                tx_alt_ft=tx_alt_ft,
+                fc_hz=fc_hz,
+                fs_hz=2_000_000,
+                beam_width_deg=round(beam_width_deg, 1),
+                max_range_km=round(max_bistatic_range_km, 1),
+                region="us",
+                tx_callsign=callsign,
+                beam_azimuth_deg=round(beam_azimuth, 2),
+                max_bistatic_range_km=round(max_bistatic_range_km, 1),
+            )
+            nodes.append(_node_dict(node))
+    return nodes
+
+
+def _generate_metro_solo(
+    n: int,
+    core_lat: float,
+    core_lon: float,
+    towers: list[tuple],
+    metro_radius_km: float,
+    prefix: str = "synth-SOLO",
+    beam_width_deg: float = 42.0,
+    max_bistatic_range_km: float = 60.0,
+    ring_radius_km: float = 18.0,
+    start_bearing_deg: float = 30.0,
+) -> list[dict]:
+    """Generate n isolated receivers on the metro rim, each aimed outward.
+
+    These exist to keep the single-node ellipse-arc path exercised.  Every
+    receiver in the coverage ring aims *inward* at the core, so their beams all
+    intersect and essentially every detection associates into a multinode
+    solve — leaving the single-node arc code with almost no live coverage.
+
+    Isolation here is by beam geometry, not distance: the metro is far too
+    small for the nationwide pool's 400 km separation.  Each solo RX sits near
+    the rim and points away from the core, so its sector cannot intersect the
+    inward-aimed ring beams no matter how the range circles overlap.  The
+    association overlap zone is computed from beam sectors
+    (compute_overlap_zone), so this is the property that actually decides
+    whether detections stay single-node.
+
+    Each also takes its own illuminator rather than the shared ring TX, which
+    puts its Doppler outside the association gate — a second, independent
+    reason not to pair.
+    """
+    if n <= 0 or not towers:
+        return []
+
+    R = 6371.0
+    # Sit between the ring envelope and the metro edge.  Far enough out that
+    # the outward beam looks away from ring airspace; inside the metro radius
+    # so the node stays on the map with the rest of the fleet.
+    rim_km = max(ring_radius_km * 2.0, metro_radius_km * 0.80)
+
+    nodes = []
+    for i in range(n):
+        # Offset from the ring's own start bearing so a solo node never lands
+        # on top of a ring receiver.
+        bearing_deg = (start_bearing_deg + 360.0 * i / max(n, 1)) % 360.0
+        bearing_rad = math.radians(bearing_deg)
+        dlat = (rim_km * math.cos(bearing_rad)) / R
+        dlon = (rim_km * math.sin(bearing_rad)) / (R * math.cos(math.radians(core_lat)))
+        rx_lat = core_lat + math.degrees(dlat)
+        rx_lon = core_lon + math.degrees(dlon)
+
+        node_id = f"{prefix}-{i + 1:04d}"
+        if not _candidate_is_safe(rx_lat, rx_lon, node_id):
+            rx_lat, rx_lon = _place_rx_on_land(
+                core_lat,
+                core_lon,
+                dist_min_km=rim_km - 10,
+                dist_max_km=rim_km + 10,
+                display_node_id=node_id,
+            )
+
+        # Pick the illuminator *furthest* from the core among the metro towers:
+        # its baseline points away from ring airspace, so the bistatic ellipse
+        # opens outward too rather than folding back over the mesh.
+        tower = max(
+            towers,
+            key=lambda t: _haversine_km(t[0], t[1], rx_lat, rx_lon),
+        )
+        tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
+
+        # Aim directly away from the core — the isolation property.
+        beam_azimuth = (_bearing_between(rx_lat, rx_lon, core_lat, core_lon) + 180.0) % 360.0
+
+        node = GeneratedNodeConfig(
+            node_id=node_id,
+            rx_lat=round(rx_lat, 6),
+            rx_lon=round(rx_lon, 6),
+            rx_alt_ft=round(random.uniform(100, 1500), 1),
+            tx_lat=tx_lat,
+            tx_lon=tx_lon,
+            tx_alt_ft=tx_alt_ft,
+            fc_hz=fc_hz,
+            fs_hz=2_000_000,
+            beam_width_deg=round(beam_width_deg, 1),
+            max_range_km=round(max_bistatic_range_km, 1),
+            region="us",
+            tx_callsign=callsign,
+            beam_azimuth_deg=round(beam_azimuth, 2),
+            max_bistatic_range_km=round(max_bistatic_range_km, 1),
+        )
+        nodes.append(_node_dict(node))
+
+    return nodes
+
+
 def _generate_coverage_ring(
     n: int,
     core_lat: float,
@@ -630,7 +959,7 @@ def _generate_coverage_ring(
     tx_tower: tuple,
     prefix: str = "synth-RING",
     radius_km: float = 18.0,
-    beam_width_deg: float = 50.0,
+    beam_width_deg: float = 42.0,
     max_range_km: float = 60.0,
     aim: str = "core",
     start_bearing_deg: float = 0.0,
@@ -685,10 +1014,181 @@ def _generate_coverage_ring(
             region="us",
             tx_callsign=callsign,
             beam_azimuth_deg=round(beam_azimuth, 2),
+            # Ring receivers model real passive-radar reach, so they are limited
+            # on bistatic range.  max_range_km stays for consumers that have not
+            # been taught the bistatic rule.
+            max_bistatic_range_km=round(max_range_km, 1),
         )
         nodes.append(_node_dict(node))
 
     return nodes
+
+
+def _generate_scatter_sites(
+    n: int,
+    core_lat: float,
+    core_lon: float,
+    towers: list[tuple],
+    metro_radius_km: float,
+    prefix: str = "synth-SCAT",
+    beam_width_deg: float = 42.0,
+    max_bistatic_range_km: float = 60.0,
+    aim_sigma_deg: float = 25.0,
+    frac_off_core: float = 0.25,
+    clump_sigma_km: float = 7.0,
+) -> list[dict]:
+    """Generate n receivers scattered the way a real deployment actually lands.
+
+    The ring and dual layouts are *designs*: someone chose where every receiver
+    goes and what it points at, to buy geometry.  A community fleet is not
+    designed.  Receivers appear where operators live and point where operators
+    care, and the resulting geometry is whatever falls out.  This layout models
+    that, so the solver is measured against the fleet it will really get rather
+    than the one we would have built.
+
+    Four properties, each with a reason:
+
+    - **Clumped, not uniform.**  Sites concentrate around the metro core and
+      around the towns the metro's real broadcast towers serve (an FM/TV tower
+      is sited for population, so the tower list doubles as a population proxy).
+      Clumping matters because co-located receivers see near-parallel bistatic
+      range gradients — the high-GDOP case a ring is specifically built to avoid.
+    - **Own illuminator per site.**  Each picks a nearby strong tower rather than
+      sharing one, weighted toward short baselines the way an operator picks the
+      station that comes in best.  Diverse illuminators mean per-node Doppler no
+      longer sits inside one shared association gate.
+    - **Aimed by hand.**  Most point roughly at the core airspace with real
+      pointing error; a minority point somewhere else entirely.
+    - **Heterogeneous hardware.**  Beamwidth and bistatic reach vary per site.
+      60 km is what a good setup achieves, not what an average one does, so the
+      reach distribution is skewed below it with a tail reaching it.
+    """
+    if n <= 0 or not towers:
+        return []
+
+    R = 6371.0
+
+    # Population anchors: the core, weighted heavily, plus each real tower.
+    anchors = [(core_lat, core_lon)] * max(2, len(towers) // 2)
+    anchors += [(t[0], t[1]) for t in towers]
+
+    def _scatter_around(anchor_lat, anchor_lon):
+        d_north = random.gauss(0, clump_sigma_km)
+        d_east = random.gauss(0, clump_sigma_km)
+        lat = anchor_lat + math.degrees(d_north / R)
+        lon = anchor_lon + math.degrees(d_east / (R * math.cos(math.radians(anchor_lat))))
+        return lat, lon
+
+    nodes = []
+    for i in range(n):
+        node_id = f"{prefix}-{i + 1:04d}"
+
+        rx_lat = rx_lon = None
+        for _ in range(40):
+            a_lat, a_lon = random.choice(anchors)
+            cand_lat, cand_lon = _scatter_around(a_lat, a_lon)
+            # Stay inside the metro the rest of the fleet and the traffic model
+            # live in; a site outside it just never sees an aircraft.
+            if _haversine_km(cand_lat, cand_lon, core_lat, core_lon) > metro_radius_km:
+                continue
+            if _candidate_is_safe(cand_lat, cand_lon, node_id):
+                rx_lat, rx_lon = cand_lat, cand_lon
+                break
+        if rx_lat is None:
+            rx_lat, rx_lon = _place_rx_on_land(
+                core_lat,
+                core_lon,
+                dist_min_km=2.0,
+                dist_max_km=max(5.0, metro_radius_km * 0.8),
+                display_node_id=node_id,
+            )
+
+        # Illuminator: prefer a short baseline, but not deterministically —
+        # 1/d² weighting reproduces "whichever strong station comes in best"
+        # without every site in a clump converging on the same tower.
+        weighted = []
+        for t in towers:
+            d = _haversine_km(rx_lat, rx_lon, t[0], t[1])
+            if d < 4.0 or d > 75.0:
+                continue
+            weighted.append((t, 1.0 / (d * d)))
+        if weighted:
+            total = sum(w for _t, w in weighted)
+            pick = random.uniform(0, total)
+            acc = 0.0
+            tower = weighted[-1][0]
+            for t, w in weighted:
+                acc += w
+                if acc >= pick:
+                    tower = t
+                    break
+        else:
+            tower = min(towers, key=lambda t: _haversine_km(rx_lat, rx_lon, t[0], t[1]))
+        tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
+
+        if random.random() < frac_off_core:
+            beam_azimuth = random.uniform(0.0, 360.0)
+        else:
+            beam_azimuth = (
+                _bearing_between(rx_lat, rx_lon, core_lat, core_lon) + random.gauss(0, aim_sigma_deg)
+            ) % 360.0
+
+        # All fleet antennas are identical 42-degree Yagis — no width jitter.
+        width = beam_width_deg
+        # Mode at 0.7 of the ceiling: most setups fall short of the best case.
+        # NOTE: `reach` is a DIFFERENTIAL range (Δ = R_tx + R_rx − L), and it
+        # is assigned to both max_bistatic_range_km (its true meaning) and
+        # max_range_km (the RX-circle approximation of it).  Consumers that
+        # know the bistatic rule read the first; the second is only a
+        # fallback and reads up to 2x too large away from the transmitter —
+        # same convention as the ring path.
+        reach = max_bistatic_range_km * random.triangular(0.40, 1.0, 0.70)
+
+        node = GeneratedNodeConfig(
+            node_id=node_id,
+            rx_lat=round(rx_lat, 6),
+            rx_lon=round(rx_lon, 6),
+            rx_alt_ft=round(random.uniform(100, 1500), 1),
+            tx_lat=tx_lat,
+            tx_lon=tx_lon,
+            tx_alt_ft=tx_alt_ft,
+            fc_hz=fc_hz,
+            fs_hz=2_000_000,
+            beam_width_deg=round(width, 1),
+            max_range_km=round(reach, 1),
+            region="us",
+            tx_callsign=callsign,
+            beam_azimuth_deg=round(beam_azimuth, 2),
+            max_bistatic_range_km=round(reach, 1),
+        )
+        nodes.append(_node_dict(node))
+
+    return nodes
+
+
+def _resolve_metro(metro: str) -> dict:
+    """Resolve a metro code (e.g. "gvl") to its descriptor in _KNOWN_METROS."""
+    key = metro.strip().lower()
+    if key not in _KNOWN_METROS:
+        raise ValueError(f"Unknown metro {metro!r} (available: {', '.join(sorted(_KNOWN_METROS))})")
+    return _KNOWN_METROS[key]
+
+
+def _towers_in_metro(towers: list, metro: dict) -> list:
+    """Towers within the metro's own radius of its centre."""
+    radius_km = metro["radius_nm"] * _NM_TO_KM
+    return [t for t in towers if _haversine_km(t[0], t[1], metro["lat"], metro["lon"]) <= radius_km]
+
+
+def _rings_in_metro(ring_spec: list, metro: dict) -> list:
+    """Ring specs whose airspace core lies inside the metro.
+
+    Cores are matched (not the illuminators) because the core is what the ring
+    and its coverage cell are built around — a TX can legitimately sit outside
+    the metro radius while lighting an airspace inside it.
+    """
+    radius_km = metro["radius_nm"] * _NM_TO_KM
+    return [s for s in ring_spec if _haversine_km(s[5], s[6], metro["lat"], metro["lon"]) <= radius_km]
 
 
 def _active_rings(n_cluster: int, n_clusters: int, ring_spec: list = _RING_TXS):
@@ -715,6 +1215,8 @@ def coverage_cells(
     n_clusters: int = 1,
     ring_spec: list = _RING_TXS,
     traffic_radius_km: float = 70.0,
+    metro: str | None = None,
+    layout: str = "ring",
 ) -> list[dict]:
     """First-class metro-cell descriptors for the active rings.
 
@@ -722,7 +1224,33 @@ def coverage_cells(
     never reconstructed from receiver positions — so water-displaced receivers
     cannot drift the hub-radial aim point. ops_weight defaults to ring size; a
     caller with real traffic figures can override the spec to inject ops/yr.
+
+    When *metro* is set the spec is narrowed to that metro's rings with the same
+    filter generate_fleet uses, so the cells always describe the nodes that were
+    actually generated.
     """
+    if layout in ("dual", "scatter"):
+        # These layouts replace the ring; emitting ring cells for them wrote a
+        # fleet_config.json describing an airspace no generated node was
+        # placed around — exactly the disagreement the docstring above rules
+        # out.  Both layouts orbit the metro core, so one core cell carries
+        # the traffic weighting.
+        if not metro:
+            return []
+        m = _resolve_metro(metro)
+        return [
+            {
+                "ring_id": f"synth-{layout.upper()}",
+                "core_lat": m["lat"],
+                "core_lon": m["lon"],
+                "radius_km": traffic_radius_km,
+                "ops_weight": float(max(1, n_cluster)),
+                "illuminator": "",
+            }
+        ]
+    if metro:
+        ring_spec = _rings_in_metro(ring_spec, _resolve_metro(metro))
+        n_clusters = min(n_clusters, len(ring_spec))
     cells = []
     for ring_id, spec, size in _active_rings(n_cluster, n_clusters, ring_spec):
         tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon = spec
@@ -748,10 +1276,16 @@ def generate_fleet(
     n_cluster: int = 8,
     n_clusters: int = 1,
     ring_radius_km: float = 18.0,
-    ring_beam_width_deg: float = 50.0,
+    ring_beam_width_deg: float = 42.0,
     ring_max_range_km: float = 60.0,
     ring_aim: str = "core",
     ring_spec: list = _RING_TXS,
+    metro: str | None = None,
+    layout: str = "ring",
+    illuminator_band: str = "any",
+    dual_min_eirp_dbm: float = 40.0,
+    dual_aim: str = "core",
+    dual_fraction: float = 0.0,
 ) -> list[dict]:
     """Generate a fleet of synthetic node configurations.
 
@@ -773,6 +1307,10 @@ def generate_fleet(
     illuminator. Diverse look angles give low-GDOP, velocity-observable multinode
     fixes. Ring slots are carved out of the metro allocation so total stays n_nodes.
 
+    layout="dual" and layout="scatter" each spend that same n_cluster budget on a
+    different arrangement instead of the ring — see _generate_dual_sites and
+    _generate_scatter_sites.
+
     Args:
         n_nodes: Total nodes to generate (100-1000).
         regions: List of regions to distribute across ["us", "eu", "au"].
@@ -787,6 +1325,16 @@ def generate_fleet(
         ring_aim: "core" (aim at metro core) or "broadside" (perp to TX).
         ring_spec: Metro ring table (defaults to _RING_TXS); inject to add metros
             or change illuminators without editing library source.
+        metro: Restrict the whole fleet to one metro area (a _KNOWN_METROS code
+            such as "gvl"). Towers and rings outside that metro's radius are
+            dropped and solo/rural placement is disabled, so every node lands in
+            the one metro. None (default) keeps the continent-wide behaviour.
+        dual_fraction: Fraction (0.0-1.0) of n_nodes to additionally run as
+            dual-illuminator sites (see _generate_dual_sites), carved out of
+            the ring/metro budget and appended after it. Requires metro
+            (ValueError otherwise, same as layout="dual"/"scatter"). Ignored
+            when layout == "dual" — the whole cluster budget is already dual
+            sites there.
 
     Returns:
         List of node config dicts ready for fleet_config.json.
@@ -794,7 +1342,15 @@ def generate_fleet(
     if regions is None:
         regions = ["us"]
 
+    # Reproducibility caveat: --seed fixes the RNG stream (it is re-seeded
+    # again after the network tower lookup below, so lookup retries cannot
+    # shift it), but the *content* of the Tower API response and the
+    # availability of shapely for the land check both feed placement
+    # decisions.  Same seed + same tower cache + same optional deps ⇒ same
+    # fleet; a flaky API or a machine without shapely will differ.
     random.seed(seed)
+
+    metro_area = _resolve_metro(metro) if metro else None
 
     tower_db = {
         "us": _TOWERS_US,
@@ -802,18 +1358,36 @@ def generate_fleet(
         "au": _TOWERS_AU,
     }
 
-    # Solo towers — only available for US region (where rural towers are defined)
-    solo_towers = _TOWERS_SOLO_US if "us" in regions else []
+    # Solo towers — only available for US region (where rural towers are defined).
+    #
+    # The nationwide pool separates receivers by 400 km, which cannot apply
+    # inside a metro, so --metro uses metro-scoped solo placement instead (see
+    # _metro_solo_nodes below).  Both exist for the same reason: solo receivers
+    # are the only way to exercise the single-node ellipse-arc path.  Without
+    # them every detection lands in an overlap zone and associates into a
+    # multinode solve — measured on the Greenville fleet as 15 of 16 nodes
+    # overlapping 1-11 neighbours, and single-node arcs nearly absent.
+    solo_towers = _TOWERS_SOLO_US if ("us" in regions and not metro_area) else []
 
     # Distribute nodes across regions proportionally to tower count
     available_towers = []
     for region in regions:
         towers = tower_db.get(region, [])
+        if metro_area:
+            towers = _towers_in_metro(towers, metro_area)
         for t in towers:
             available_towers.append((region, t))
 
     if not available_towers:
+        if metro_area:
+            raise ValueError(
+                f"No towers within {metro_area['radius_nm']} nm of {metro_area['name']} for regions: {regions}"
+            )
         raise ValueError(f"No towers available for regions: {regions}")
+
+    if metro_area:
+        ring_spec = _rings_in_metro(ring_spec, metro_area)
+        n_clusters = min(n_clusters, len(ring_spec))
 
     # ── Pre-fetch real towers from Tower API for metro areas ──────────────────
     # Each metro area gets multiple real towers so nodes in the same city
@@ -829,10 +1403,9 @@ def generate_fleet(
                 from retina_simulation.tower_resolver import lookup_metro_towers
             except ImportError:
                 from tower_resolver import lookup_metro_towers
-            all_metro_centers = []
-            for region in regions:
-                for t in tower_db.get(region, []):
-                    all_metro_centers.append(t)
+            # Only the towers actually in play — under --metro this is a handful
+            # of centres instead of every metro on the continent.
+            all_metro_centers = [t for _region, t in available_towers]
             metro_api_towers_raw = lookup_metro_towers(all_metro_centers, radius_km=80, limit=50)
             # Map back to (lat, lon) → tower list
             for t in all_metro_centers:
@@ -843,11 +1416,75 @@ def generate_fleet(
             import logging
 
             logging.warning("Tower API lookup failed, using hardcoded towers: %s", exc)
+    # Re-seed after the lookup: any RNG the HTTP/cache path consumed (or will
+    # consume differently on retry) must not shift the placement stream.
+    random.seed(seed)
 
     # Allocate solo and cluster node counts, carving both from metro allocation
-    n_solo = max(1, round(n_nodes * solo_fraction)) if solo_towers else 0
-    n_cluster = max(0, n_cluster)
+    if solo_towers:
+        n_solo = max(1, round(n_nodes * solo_fraction))
+    elif metro_area:
+        # Metro-scoped solo receivers, placed on the rim and aimed outward.
+        n_solo = max(1, round(n_nodes * solo_fraction))
+    else:
+        n_solo = 0
+    # No rings survived the metro filter → give their budget back to metro nodes
+    # instead of silently generating fewer nodes than asked for.
+    if layout in ("dual", "scatter"):
+        # These layouts replace the ring and take their budget straight from
+        # n_cluster.  Gating it on the ring table surviving the metro filter
+        # (n_clusters > 0) zeroed the whole layout for any metro without a
+        # _RING_TXS entry — the ring table is irrelevant to them.
+        n_cluster = max(0, n_cluster)
+    else:
+        n_cluster = max(0, n_cluster) if n_clusters > 0 else 0
     n_metro = max(0, n_nodes - n_solo - n_cluster)
+
+    # dual_fraction carve: a slice of the SAME layout's ring/metro budget
+    # additionally runs as dual-illuminator sites (see _generate_dual_sites),
+    # independent of layout="dual" (already all-dual there — the whole
+    # cluster budget went to dual sites, so dual_fraction is a no-op).
+    # Solo carve is untouched: solo answers a different question
+    # (single-node ellipse-arc coverage) than dual does.
+    n_dual_sites = 0
+    if dual_fraction > 0 and layout != "dual":
+        if not metro_area:
+            raise ValueError("dual_fraction > 0 requires --metro: dual sites are placed around a metro core")
+        n_dual_nodes = min(round(n_nodes * dual_fraction / 2) * 2, n_cluster + n_metro)
+        _from_cluster = min(n_dual_nodes, n_cluster)
+        n_cluster -= _from_cluster
+        n_metro -= n_dual_nodes - _from_cluster
+        n_dual_sites = n_dual_nodes // 2
+
+    def _dual_fraction_sites(n_sites: int) -> list[dict]:
+        """Extra dual-illuminator sites for the dual_fraction carve above.
+
+        Mirrors the layout="dual" branch's own _generate_dual_sites call
+        (same prefix/towers/aim construction) so a fraction-carved site is
+        indistinguishable from a full dual-layout one. Called last — after
+        every other node in this fleet has consumed its RNG draws — so
+        dual_fraction=0.0 (n_sites=0, no call) reproduces today's scene
+        byte-for-byte at the same seed.
+        """
+        if n_sites <= 0:
+            return []
+        _dual_towers = [t for _r, t in available_towers] or _TOWERS_US
+        if illuminator_band == "vhf":
+            _vhf = [t for t in _dual_towers if t[3] < 300e6]
+            if len(_vhf) >= 2:
+                _dual_towers = _vhf
+        return _generate_dual_sites(
+            n_sites=n_sites,
+            core_lat=metro_area["lat"],
+            core_lon=metro_area["lon"],
+            towers=_dual_towers,
+            metro_radius_km=metro_area["radius_nm"] * _NM_TO_KM,
+            prefix=f"synth-{metro.strip().upper()}-DUAL" if metro else "synth-DUAL",
+            beam_width_deg=ring_beam_width_deg,
+            max_bistatic_range_km=ring_max_range_km,
+            min_eirp_dbm=dual_min_eirp_dbm,
+            aim=dual_aim,
+        )
 
     # Track how many times each API tower has been used (per metro) for
     # round-robin distribution — avoids all nodes sharing one tower.
@@ -872,7 +1509,9 @@ def generate_fleet(
             fc_hz = t["fc_hz"]
             callsign = t["tx_callsign"]
 
-        region_prefix = region.upper()
+        # Metro-scoped fleets are named for the metro (synth-GVL-0001) rather
+        # than the continent, so node IDs say where they actually are.
+        region_prefix = metro.strip().upper() if metro else region.upper()
         node_id = f"synth-{region_prefix}-{i + 1:04d}"
         rx_lat, rx_lon = _place_rx_on_land(
             tx_lat,
@@ -884,7 +1523,7 @@ def generate_fleet(
         rx_alt_ft = random.uniform(100, 2000)
 
         node_fc = fc_hz + random.choice([-500000, 0, 0, 0, 500000])
-        beam_width = random.uniform(35, 45)
+        beam_width = 42.0  # identical 42-degree Yagis fleet-wide
         max_range = random.uniform(35, 55)
 
         node = GeneratedNodeConfig(
@@ -901,11 +1540,32 @@ def generate_fleet(
             max_range_km=round(max_range, 1),
             region=region,
             tx_callsign=callsign,
+            # Every bistatic receiver is bounded by differential range; a circle
+            # on the RX is never the true footprint.  These base nodes were the
+            # last path still declaring only a monostatic limit, which left them
+            # gating and rendering as circles while the ring, solo and dual
+            # paths all used the ellipse.  The randomised value carries over
+            # unchanged — it is the same number, read correctly.
+            max_bistatic_range_km=round(max_range, 1),
         )
         nodes.append(_node_dict(node))
 
     # --- Solo nodes (isolated — strictly one node per unique tower position) ---
-    if n_solo > 0:
+    if n_solo > 0 and metro_area:
+        # Metro-scoped: isolation comes from aiming away from the core, not
+        # from the nationwide pool's 400 km separation (impossible in a metro).
+        nodes.extend(
+            _generate_metro_solo(
+                n=n_solo,
+                core_lat=metro_area["lat"],
+                core_lon=metro_area["lon"],
+                towers=[t for _region, t in available_towers] or _TOWERS_US,
+                metro_radius_km=metro_area["radius_nm"] * _NM_TO_KM,
+                ring_radius_km=ring_radius_km,
+                max_bistatic_range_km=ring_max_range_km,
+            )
+        )
+    elif n_solo > 0:
         # All US positions that must be avoided when extending the pool
         # Avoid positions: metro towers only.  Named solo towers are gated
         # inside _extend_solo_pool with the same min_sep check so they are
@@ -935,7 +1595,7 @@ def generate_fleet(
             )
             rx_alt_ft = random.uniform(100, 1500)
 
-            beam_width = random.uniform(35, 45)
+            beam_width = 42.0  # identical 42-degree Yagis fleet-wide
             max_range = random.uniform(35, 55)
 
             node = GeneratedNodeConfig(
@@ -952,6 +1612,11 @@ def generate_fleet(
                 max_range_km=round(max_range, 1),
                 region="us",
                 tx_callsign=callsign,
+                # Same bistatic bound the base/ring/dual paths declare — these
+                # were the last nodes gating as monostatic circles, and the
+                # one path specifically meant to exercise single-node ellipse
+                # arcs.  Same number, read correctly (see the base-node note).
+                max_bistatic_range_km=round(max_range, 1),
             )
             nodes.append(_node_dict(node))
 
@@ -962,6 +1627,59 @@ def generate_fleet(
     # shared VHF TX keeps Doppler inside the association gate. Spreading the
     # budget across metros puts overlap coverage where traffic actually flies.
     ring_nodes = []
+    if layout == "dual":
+        # Dual-illuminator sites replace the coverage ring entirely: they are
+        # two different answers to the same problem.  A ring buys geometry by
+        # surrounding the airspace with receivers that all overlap; a dual site
+        # buys it at the receiver, from two illuminators sharing one antenna.
+        if not metro_area:
+            # Without a core to place sites around, the layout silently
+            # returned a fleet ~n_cluster nodes short of --nodes.
+            raise ValueError("--layout dual requires --metro: dual sites are placed around a metro core")
+        if metro_area:
+            _dual_towers = [t for _r, t in available_towers] or _TOWERS_US
+            if illuminator_band == "vhf":
+                # All-VHF is a legitimate configuration to test on its own:
+                # VHF is the better illuminator on physics, and restricting to
+                # one band removes the cross-band question from the result.
+                _vhf = [t for t in _dual_towers if t[3] < 300e6]
+                if len(_vhf) >= 2:
+                    _dual_towers = _vhf
+            ring_nodes.extend(
+                _generate_dual_sites(
+                    n_sites=max(0, n_cluster) // 2,
+                    core_lat=metro_area["lat"],
+                    core_lon=metro_area["lon"],
+                    towers=_dual_towers,
+                    metro_radius_km=metro_area["radius_nm"] * _NM_TO_KM,
+                    prefix=f"synth-{metro.strip().upper()}-DUAL" if metro else "synth-DUAL",
+                    beam_width_deg=ring_beam_width_deg,
+                    max_bistatic_range_km=ring_max_range_km,
+                    min_eirp_dbm=dual_min_eirp_dbm,
+                    aim=dual_aim,
+                )
+            )
+        return nodes + ring_nodes
+    if layout == "scatter":
+        # Like "dual", this replaces the ring rather than adding to it — the
+        # point is a fleet nobody placed, and a designed ring alongside it
+        # would carry the geometry the layout exists to do without.
+        if not metro_area:
+            raise ValueError("--layout scatter requires --metro: scatter sites are placed around a metro core")
+        if metro_area:
+            ring_nodes.extend(
+                _generate_scatter_sites(
+                    n=max(0, n_cluster),
+                    core_lat=metro_area["lat"],
+                    core_lon=metro_area["lon"],
+                    towers=[t for _r, t in available_towers] or _TOWERS_US,
+                    metro_radius_km=metro_area["radius_nm"] * _NM_TO_KM,
+                    prefix=f"synth-{metro.strip().upper()}-SCAT" if metro else "synth-SCAT",
+                    beam_width_deg=ring_beam_width_deg,
+                    max_bistatic_range_km=ring_max_range_km,
+                )
+            )
+        return nodes + ring_nodes + _dual_fraction_sites(n_dual_sites)
     for ring_id, spec, size in _active_rings(n_cluster, n_clusters, ring_spec):
         tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign, core_lat, core_lon = spec
         ring_nodes.extend(
@@ -979,13 +1697,26 @@ def generate_fleet(
         )
     nodes = ring_nodes + nodes  # prepend so ring IDs are first
 
-    return nodes
+    # Appended last: every other node above has already consumed its RNG
+    # draws, so dual_fraction=0.0 (n_dual_sites=0) leaves that stream
+    # untouched and reproduces today's scene byte-for-byte at the same seed.
+    return nodes + _dual_fraction_sites(n_dual_sites)
 
 
 def fleet_summary(nodes: list[dict]) -> dict:
     """Compute a summary of the fleet configuration."""
     from collections import Counter
 
+    if not nodes:
+        # min()/max() below raise on an empty fleet — report it instead.
+        return {
+            "total_nodes": 0,
+            "regions": {},
+            "unique_towers": 0,
+            "towers_by_usage": {},
+            "lat_range": None,
+            "lon_range": None,
+        }
     regions = Counter(n["region"] for n in nodes)
     towers = Counter(n["tx_callsign"] for n in nodes)
     return {
@@ -1008,8 +1739,44 @@ def main():
     parser = argparse.ArgumentParser(description="Generate fleet of synthetic node configs")
     parser.add_argument("--nodes", type=int, default=200, help="Number of nodes (100-1000)")
     parser.add_argument("--regions", type=str, default="us", help="Comma-separated regions: us,eu,au")
+    parser.add_argument(
+        "--metro",
+        type=str,
+        default=None,
+        choices=sorted(_KNOWN_METROS),
+        help="Restrict the whole fleet to one metro area (drops solo/rural nodes)",
+    )
     parser.add_argument("--output", type=str, default="fleet_config.json", help="Output file path")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--layout",
+        choices=("ring", "dual", "scatter"),
+        default="ring",
+        help="ring: receivers circling a core, all aimed inward. "
+        "dual: receivers scattered across the metro, each "
+        "running two nodes on two illuminators from one "
+        "antenna (n-cluster is the node budget, so half "
+        "that many sites). "
+        "scatter: an undesigned community fleet — sites "
+        "clumped where people live, each on its own nearby "
+        "illuminator, hand-aimed, heterogeneous hardware.",
+    )
+    parser.add_argument(
+        "--illuminator-band", choices=("any", "vhf"), default="any", help="restrict dual-site illuminators to VHF"
+    )
+    parser.add_argument(
+        "--dual-min-eirp-dbm", type=float, default=40.0, help="floor on the weaker illuminator of a dual pair"
+    )
+    parser.add_argument(
+        "--dual-aim",
+        choices=("core", "random"),
+        default="core",
+        help="core: aim dual sites at the metro core with jitter. "
+        "random: scatter sectors to minimise inter-site "
+        "overlap — measured to starve the layout, because "
+        "85%% of traffic runs through the core and the solve "
+        "rate collapsed from 105 to 9.",
+    )
     parser.add_argument(
         "--n-cluster",
         "--n-ring",
@@ -1024,13 +1791,14 @@ def main():
         dest="n_clusters",
         type=int,
         default=5,
-        help="Number of metro coverage rings (more = multinode spread across the map)",
+        help="Number of metro coverage rings (more = multinode spread across "
+        "the map). Capped at the number of rings that survive --metro.",
     )
     parser.add_argument(
         "--ring-radius-km", type=float, default=18.0, help="Receiver ring radius around each metro core"
     )
     parser.add_argument(
-        "--ring-beam-width-deg", type=float, default=50.0, help="Yagi half-power beamwidth for ring receivers"
+        "--ring-beam-width-deg", type=float, default=42.0, help="Yagi half-power beamwidth for ring receivers"
     )
     parser.add_argument("--ring-max-range-km", type=float, default=60.0, help="Detection range for ring receivers")
     parser.add_argument(
@@ -1039,6 +1807,15 @@ def main():
         default="core",
         choices=["core", "broadside"],
         help="Aim ring beams at the metro core or broadside to TX",
+    )
+    parser.add_argument(
+        "--dual-fraction",
+        type=float,
+        default=0.0,
+        help="Fraction (0.0-1.0) of --nodes to additionally run as "
+        "dual-illuminator sites, carved out of the ring/metro "
+        "budget and appended after it. Requires --metro. "
+        "Ignored for --layout dual (already all-dual).",
     )
     args = parser.parse_args()
 
@@ -1049,18 +1826,33 @@ def main():
         seed=args.seed,
         n_cluster=args.n_cluster,
         n_clusters=args.n_clusters,
+        layout=args.layout,
+        illuminator_band=args.illuminator_band,
+        dual_min_eirp_dbm=args.dual_min_eirp_dbm,
+        dual_aim=args.dual_aim,
+        dual_fraction=args.dual_fraction,
         ring_radius_km=args.ring_radius_km,
         ring_beam_width_deg=args.ring_beam_width_deg,
         ring_max_range_km=args.ring_max_range_km,
         ring_aim=args.ring_aim,
+        metro=args.metro,
     )
-    cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters)
+    cells = coverage_cells(n_cluster=args.n_cluster, n_clusters=args.n_clusters, metro=args.metro, layout=args.layout)
     summary = fleet_summary(nodes)
 
     config = {
         "fleet": {
             "generated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
             "summary": summary,
+            # Stamps the scene actually generated so the orchestrator can
+            # detect a drift between this and a polled backend config and
+            # self-restart for regeneration (see orchestrator._poll_simulation_config).
+            "scene": {
+                "n_nodes": args.nodes,
+                "dual_fraction": args.dual_fraction,
+                "layout": args.layout,
+                "seed": args.seed,
+            },
         },
         "nodes": nodes,
         "cells": cells,
