@@ -697,6 +697,37 @@ def build_ground_truth_payload(aircraft_summaries: list[dict]) -> list[dict]:
     return payload_aircraft
 
 
+def build_adsb_push_payload(aircraft_summaries: list[dict]) -> list[dict]:
+    """Remap world aircraft summaries to the server ADS-B push schema.
+
+    Transponder-equipped aircraft only.  This push IS the simulated ADS-B
+    broadcast, and a dark target by definition emits none — pushing it with
+    its object id standing in for the hex minted a fake transponder per dark
+    aircraft on the server, so every dark solve keyed mn-adsb-* and the dark
+    lane stayed permanently empty.  Dark aircraft still reach the server
+    through the ground-truth push, where the object id is the intended key
+    (build_ground_truth_payload above).
+    """
+    payload_aircraft = []
+    for ac in aircraft_summaries:
+        hex_code = ac.get("adsb_hex") or ""
+        if not hex_code:
+            continue
+        speed_ms = ac.get("speed_ms", 0)
+        payload_aircraft.append(
+            {
+                "hex": hex_code,
+                "flight": "",
+                "lat": round(ac["lat"], 5),
+                "lon": round(ac["lon"], 5),
+                "alt_baro": round(ac["alt_km"] * 1000 / 0.3048),
+                "gs": round(speed_ms * 1.94384, 1),
+                "track": round(ac.get("heading", 0), 1),
+            }
+        )
+    return payload_aircraft
+
+
 async def _push_ground_truth_live(
     orchestrator: FleetOrchestrator,
     base_url: str,
@@ -971,25 +1002,7 @@ async def _push_adsb_live(
 
         try:
             aircraft_raw = orchestrator.world.get_aircraft_summary()
-            payload_aircraft = []
-            for ac in aircraft_raw:
-                # Push ALL aircraft — ADS-B and dark/drone/anomalous alike.
-                # ADS-B aircraft use their transponder hex; others use object_id.
-                hex_code = ac.get("adsb_hex") or ac.get("id", "")
-                if not hex_code:
-                    continue
-                speed_ms = ac.get("speed_ms", 0)
-                payload_aircraft.append(
-                    {
-                        "hex": hex_code,
-                        "flight": "",
-                        "lat": round(ac["lat"], 5),
-                        "lon": round(ac["lon"], 5),
-                        "alt_baro": round(ac["alt_km"] * 1000 / 0.3048),
-                        "gs": round(speed_ms * 1.94384, 1),
-                        "track": round(ac.get("heading", 0), 1),
-                    }
-                )
+            payload_aircraft = build_adsb_push_payload(aircraft_raw)
 
             if not payload_aircraft:
                 continue
