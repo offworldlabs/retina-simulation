@@ -697,6 +697,23 @@ def build_ground_truth_payload(aircraft_summaries: list[dict]) -> list[dict]:
     return payload_aircraft
 
 
+def build_real_adsb_body(payload: list[dict]) -> dict:
+    """Wrap relayed adsb.lol aircraft for /api/sim/adsb/push.
+
+    source=real declares the world these positions belong to.  The server
+    stores it on each cache entry and claiming keys on it: without the tag,
+    every relayed real aircraft is a decoy a synthetic node's echo can bind
+    to on a delay/Doppler coincidence — a plane icon at a position no radar
+    in either world measured.  The fleet's own push (build_adsb_push_payload)
+    stays untagged and the server defaults it to the simulated world.
+    """
+    return {
+        "ts_ms": int(time.time() * 1000),
+        "source": "real",
+        "aircraft": payload,
+    }
+
+
 def build_adsb_push_payload(aircraft_summaries: list[dict]) -> list[dict]:
     """Remap world aircraft summaries to the server ADS-B push schema.
 
@@ -843,12 +860,7 @@ async def _push_real_adsb(
                 )
 
             if payload:
-                body = json.dumps(
-                    {
-                        "ts_ms": int(time.time() * 1000),
-                        "aircraft": payload,
-                    }
-                ).encode()
+                body = json.dumps(build_real_adsb_body(payload)).encode()
                 req = urllib.request.Request(
                     url,
                     data=body,
@@ -1251,11 +1263,16 @@ async def main_async(args):
             )
         )
 
-    # Real ADS-B from adsb.lol — inject real air traffic when metro areas are configured.
-    # --metro (generation-time scoping) implies the same area for real traffic, so a
-    # Greenville-only fleet gets Greenville ADS-B without also passing --metros.
+    # Real ADS-B from adsb.lol — opt-in via --real-adsb, scoped to the configured
+    # metro areas.  --metro (generation-time scoping) implies the same area for
+    # real traffic, so a Greenville-only fleet gets Greenville ADS-B without also
+    # passing --metros.  Opt-in rather than implied by metro config: relaying
+    # real traffic over the same footprint the synthetic fleet flies in hands
+    # the server's claiming stage a pool of decoy transponders, and for a long
+    # time metro config alone switched this on — the "realistic mix" arrived
+    # with ghost planes attached.
     adsb_metros = getattr(args, "metros", "") or getattr(args, "metro", "") or ""
-    if args.validation_url and adsb_metros:
+    if getattr(args, "real_adsb", False) and args.validation_url and adsb_metros:
         metro_areas = _parse_metro_areas(adsb_metros)
         if metro_areas:
             tasks.append(
@@ -1266,6 +1283,8 @@ async def main_async(args):
                     interval_s=10.0,
                 )
             )
+    elif adsb_metros and args.validation_url:
+        log.info("Real ADS-B relay disabled (pass --real-adsb to inject adsb.lol traffic)")
 
     if args.validate and args.validation_url:
         tasks.append(
@@ -1369,9 +1388,17 @@ def main():
         type=str,
         default="",
         help="Comma-separated metro codes to focus on (e.g. atl,gvl). "
-        "Filters an already-generated fleet to these metros and "
-        "injects real ADS-B from adsb.lol. "
+        "Filters an already-generated fleet to these metros. "
         f"Available: {','.join(_KNOWN_METROS.keys())}",
+    )
+    parser.add_argument(
+        "--real-adsb",
+        action="store_true",
+        help="Relay real adsb.lol traffic over the configured metro areas "
+        "into the server (tagged source=real so it is display-only for "
+        "claiming). Off by default: the relay used to switch on with metro "
+        "config alone, and the decoy transponders it added produced ghost "
+        "planes on the map.",
     )
     parser.add_argument(
         "--no-hub-radial",

@@ -54,3 +54,17 @@ class TestBuildAdsbPushPayload:
             ]
         )
         assert [e["hex"] for e in out] == ["a1b2c3", "d4e5f6"]
+
+
+class TestBuildRealAdsbBody:
+    def test_body_declares_the_real_world(self):
+        """The server's claiming stage keys on this tag; an untagged relay
+        hands every synthetic node a pool of real-aircraft decoys to bind
+        its echoes to — the ghost planes of 2026-08-27."""
+        from retina_simulation.orchestrator import build_real_adsb_body
+
+        payload = [{"hex": "a97cf2", "lat": 34.84, "lon": -82.35}]
+        body = build_real_adsb_body(payload)
+        assert body["source"] == "real"
+        assert body["aircraft"] == payload
+        assert isinstance(body["ts_ms"], int)
