@@ -108,6 +108,18 @@ def waypoints_for_metro(metro: str | None) -> list[tuple[float, float]]:
     return _REGIONAL_WAYPOINTS.get(metro.strip().lower(), _US_WAYPOINTS)
 
 
+# Transponder-outage timing.  An outage has to outlast the backend's 45 s
+# fix-age cap and the 60 s map expiry to be observable as "ADS-B went away"
+# rather than as a dropped update, and has to be short enough that a 20-minute
+# capture sees several start and end — hence a minute to four minutes, opening
+# 20 s to 2 min after spawn (long enough that the track is established first).
+_ADSB_OUTAGE_START_S = (20.0, 120.0)
+_ADSB_OUTAGE_DURATION_S = (60.0, 240.0)
+# Re-roll of already-flying aircraft when the knob is raised at runtime opens
+# sooner: verification should not have to wait for a whole fleet turnover.
+_ADSB_OUTAGE_RUNTIME_START_S = (5.0, 60.0)
+
+
 @dataclass
 class SimulatedAircraft:
     """A simulated aircraft in the world with lat/lon/alt position."""
@@ -151,6 +163,22 @@ class SimulatedAircraft:
     anomaly_fired: bool = False  # True once the event has been applied
     _pre_spoof_lat: float = 0.0  # real position before GPS spoof
     _pre_spoof_lon: float = 0.0
+    # Transponder outage (scheduled window in world-clock seconds).  The
+    # aircraft still HAS a transponder — has_adsb and adsb_hex are untouched —
+    # it just stops broadcasting for the window, which is what a real failed
+    # or switched-off transponder looks like to every downstream consumer.
+    adsb_outage_start_s: float | None = None
+    adsb_outage_end_s: float | None = None
+    # World clock as of the last step(), so adsb_silent can be a plain
+    # property: the aircraft has no back-reference to its world.
+    sim_now_s: float = 0.0
+
+    @property
+    def adsb_silent(self) -> bool:
+        """True while the world clock sits inside this aircraft's outage."""
+        if self.adsb_outage_start_s is None or self.adsb_outage_end_s is None:
+            return False
+        return self.adsb_outage_start_s <= self.sim_now_s < self.adsb_outage_end_s
 
 
 @dataclass
@@ -367,6 +395,11 @@ class SimulationWorld:
         # stay matched to this value.
         self.frac_drone: float = 0.0
         self.frac_dark: float = 0.15
+        # Fraction of ADS-B-equipped aircraft that suffer a transponder
+        # outage mid-flight.  Orthogonal to the frac_* type roll above (it is
+        # a fraction OF the ADS-B population, not of all spawns), and OFF by
+        # default so nothing changes for anyone who does not set it.
+        self.frac_adsb_outage: float = 0.0
         # remaining fraction = commercial aircraft with ADS-B
         # Hub-radial flight planning: when metro_cells is non-empty, this
         # fraction of spawns is routed through a metro cell; the rest are
@@ -586,6 +619,8 @@ class SimulationWorld:
             letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
             adsb_callsign = f"{''.join(random.choices(letters, k=3))}{random.randint(100, 9999)}"
 
+        outage_start, outage_end = self._roll_adsb_outage(has_adsb, _ADSB_OUTAGE_START_S)
+
         # Initial heading toward next waypoint
         next_wp = route[1] if len(route) > 1 else route[0]
         heading = _bearing_deg(lat, lon, next_wp[0], next_wp[1])
@@ -611,12 +646,50 @@ class SimulationWorld:
             object_type=object_type,
             adsb_hex=adsb_hex,
             adsb_callsign=adsb_callsign,
+            adsb_outage_start_s=outage_start,
+            adsb_outage_end_s=outage_end,
+            sim_now_s=self._time,
             created_at=self._time,
             lifetime_s=random.uniform(180, 900) if object_type != "drone" else random.uniform(60, 300),
             waypoints=route,
             waypoint_idx=1,
             **self._maybe_schedule_anomaly(is_anomalous, object_type),
         )
+
+    def _roll_adsb_outage(self, has_adsb: bool, start_range: tuple[float, float]) -> tuple[float | None, float | None]:
+        """Roll a transponder-outage window, or (None, None) for no outage.
+
+        Dark aircraft are never candidates: they have no transponder to lose.
+        """
+        if not has_adsb or self.frac_adsb_outage <= 0.0:
+            return None, None
+        if random.random() >= self.frac_adsb_outage:
+            return None, None
+        start = self._time + random.uniform(*start_range)
+        return start, start + random.uniform(*_ADSB_OUTAGE_DURATION_S)
+
+    def schedule_adsb_outages(self) -> int:
+        """Roll outages for live ADS-B aircraft that have none scheduled yet.
+
+        Called when frac_adsb_outage is raised at runtime: without it the knob
+        only reaches aircraft spawned after the change, so verification would
+        have to wait for a full fleet turnover.  Aircraft that already carry a
+        window (including one that has already ended) are left alone, so
+        repeated config polls cannot re-roll the same aircraft every 5 s.
+        Returns the number newly scheduled.
+        """
+        scheduled = 0
+        for ac in self.aircraft:
+            if ac.adsb_outage_start_s is not None:
+                continue
+            start, end = self._roll_adsb_outage(ac.has_adsb, _ADSB_OUTAGE_RUNTIME_START_S)
+            if start is None:
+                continue
+            ac.adsb_outage_start_s = start
+            ac.adsb_outage_end_s = end
+            ac.sim_now_s = self._time
+            scheduled += 1
+        return scheduled
 
     # Expired aircraft are retired only once they are at least this far from
     # the world center — a target vanishing overhead reads as a tracking bug
@@ -691,6 +764,7 @@ class SimulationWorld:
 
         # Update each aircraft
         for ac in self.aircraft:
+            ac.sim_now_s = self._time
             self._update_aircraft(ac, dt)
 
         self._enforce_separation(dt)
@@ -1000,8 +1074,10 @@ class SimulationWorld:
             dopplers.append(round(doppler, 2))
             snrs.append(round(snr, 2))
 
-            # ADS-B entry
-            if ac.has_adsb:
+            # ADS-B entry.  A silent transponder gets exactly what a dark
+            # aircraft gets — a None slot — so the outage is indistinguishable
+            # downstream from "this echo carries no ADS-B tag".
+            if ac.has_adsb and not ac.adsb_silent:
                 has_any_adsb = True
                 speed_ms = ac.speed_km_s * 1000
                 # GPS spoof: ADS-B reports frozen pre-spoof position while
@@ -1069,6 +1145,7 @@ class SimulationWorld:
                 "object_type": ac.object_type,
                 "adsb_hex": ac.adsb_hex,
                 "adsb_callsign": ac.adsb_callsign,
+                "adsb_silent": ac.adsb_silent,
                 "anomaly_event": ac.anomaly_event,
             }
             for ac in self.aircraft
