@@ -142,8 +142,12 @@ class _StubWorld:
     frac_anomalous = 0.0
     frac_drone = 0.0
     frac_dark = 0.0
+    frac_adsb_outage = 0.0
     min_aircraft = 1
     max_aircraft = 1
+
+    def schedule_adsb_outages(self):
+        return 0
 
 
 class _StubOrchestrator:

@@ -690,6 +690,10 @@ def build_ground_truth_payload(aircraft_summaries: list[dict]) -> list[dict]:
                 "object_type": ac.get("object_type", "aircraft"),
                 "is_anomalous": ac.get("is_anomalous", False),
                 "has_adsb": ac.get("has_adsb", False),
+                # Transponder present but currently silent.  has_adsb stays
+                # True — the truth is "this aircraft has a transponder and it
+                # is off right now", which is what verifies a known-track hold.
+                "adsb_silent": ac.get("adsb_silent", False),
                 "adsb_callsign": ac.get("adsb_callsign") or None,
                 "anomaly_event": ac.get("anomaly_event") or None,
             }
@@ -717,18 +721,25 @@ def build_real_adsb_body(payload: list[dict]) -> dict:
 def build_adsb_push_payload(aircraft_summaries: list[dict]) -> list[dict]:
     """Remap world aircraft summaries to the server ADS-B push schema.
 
-    Transponder-equipped aircraft only.  This push IS the simulated ADS-B
+    Transponder-equipped aircraft that are actually broadcasting only.  This push IS the simulated ADS-B
     broadcast, and a dark target by definition emits none — pushing it with
     its object id standing in for the hex minted a fake transponder per dark
     aircraft on the server, so every dark solve keyed mn-adsb-* and the dark
     lane stayed permanently empty.  Dark aircraft still reach the server
     through the ground-truth push, where the object id is the intended key
     (build_ground_truth_payload above).
+
+    An aircraft inside a transponder outage is skipped for the same reason:
+    this push IS the broadcast, so a silent aircraft must stop appearing in
+    it — otherwise the outage is invisible to the server and the known-track
+    hold it exists to exercise is never entered.
     """
     payload_aircraft = []
     for ac in aircraft_summaries:
         hex_code = ac.get("adsb_hex") or ""
         if not hex_code:
+            continue
+        if ac.get("adsb_silent"):
             continue
         speed_ms = ac.get("speed_ms", 0)
         payload_aircraft.append(
@@ -928,16 +939,29 @@ async def _poll_simulation_config(
                 orchestrator.world.frac_anomalous = float(cfg.get("frac_anomalous", 0.0))
                 orchestrator.world.frac_drone = float(cfg.get("frac_drone", 0.0))
                 orchestrator.world.frac_dark = float(cfg.get("frac_dark", 0.15))
+                # Default 0.0 (matching SimulationWorld) so a payload missing
+                # the key cannot switch outages on.  Raising it also re-rolls
+                # aircraft already in the air — see schedule_adsb_outages.
+                orchestrator.world.frac_adsb_outage = float(cfg.get("frac_adsb_outage", 0.0))
+                if orchestrator.world.frac_adsb_outage > 0.0:
+                    n_sched = orchestrator.world.schedule_adsb_outages()
+                    if n_sched:
+                        log.info(
+                            "ADS-B outages scheduled for %d in-flight aircraft (frac %.2f)",
+                            n_sched,
+                            orchestrator.world.frac_adsb_outage,
+                        )
                 if "min_aircraft" in cfg:
                     orchestrator.world.min_aircraft = int(cfg["min_aircraft"])
                 if "max_aircraft" in cfg:
                     orchestrator.world.max_aircraft = int(cfg["max_aircraft"])
                 last_updated_at = updated_at
                 log.info(
-                    "Simulation config updated: anomalous=%.2f drone=%.2f dark=%.2f aircraft=%d–%d",
+                    "Simulation config updated: anomalous=%.2f drone=%.2f dark=%.2f adsb_outage=%.2f aircraft=%d–%d",
                     orchestrator.world.frac_anomalous,
                     orchestrator.world.frac_drone,
                     orchestrator.world.frac_dark,
+                    orchestrator.world.frac_adsb_outage,
                     orchestrator.world.min_aircraft,
                     orchestrator.world.max_aircraft,
                 )
