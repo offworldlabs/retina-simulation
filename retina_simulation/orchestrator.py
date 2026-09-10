@@ -39,6 +39,7 @@ from retina_simulation.generator import (
     fleet_summary,
     generate_fleet,
 )
+from retina_simulation.live_adsb import LiveAdsbClient
 from retina_simulation.tower_resolver import apply_tower_assignments, resolve_towers
 from retina_simulation.world import (
     MetroCell,
@@ -266,6 +267,10 @@ class FleetOrchestrator:
         self.metro_traffic_frac = min(1.0, max(0.0, metro_traffic_frac))
         self.connections: dict[str, NodeConnection] = {}
         self.world: SimulationWorld | None = None
+        # Runtime switch for the live ADS-B seed task (_seed_live_adsb):
+        # the task only runs when main_async wires it, but the backend's
+        # simulation config can pause it without a restart.
+        self.live_adsb_enabled = True
         self._running = False
         self._stats = {
             "total_frames": 0,
@@ -651,6 +656,7 @@ class FleetOrchestrator:
             "frames_per_sec": round(self._stats["total_frames"] / max(elapsed, 1), 1),
             "detections_per_sec": round(self._stats["total_detections"] / max(elapsed, 1), 1),
             "aircraft_count": len(self.world.aircraft) if self.world else 0,
+            "live_aircraft_count": len(self.world.live_aircraft) if self.world else 0,
             "ground_truth_snapshots": len(self.ground_truth),
         }
 
@@ -696,6 +702,10 @@ def build_ground_truth_payload(aircraft_summaries: list[dict]) -> list[dict]:
                 "adsb_silent": ac.get("adsb_silent", False),
                 "adsb_callsign": ac.get("adsb_callsign") or None,
                 "anomaly_event": ac.get("anomaly_event") or None,
+                # "live" for an aircraft mirrored from the ADS-B feed, "sim"
+                # for the world's own spawns — so the server can count and
+                # colour the two populations apart.
+                "source": ac.get("source") or "sim",
             }
         )
     return payload_aircraft
@@ -745,7 +755,7 @@ def build_adsb_push_payload(aircraft_summaries: list[dict]) -> list[dict]:
         payload_aircraft.append(
             {
                 "hex": hex_code,
-                "flight": "",
+                "flight": ac.get("adsb_callsign") or "",
                 "lat": round(ac["lat"], 5),
                 "lon": round(ac["lon"], 5),
                 "alt_baro": round(ac["alt_km"] * 1000 / 0.3048),
@@ -890,6 +900,70 @@ async def _push_real_adsb(
             log.debug("Real ADSB push failed: %s", e)
 
 
+async def _seed_live_adsb(
+    orchestrator: FleetOrchestrator,
+    feed_url: str,
+    areas: list[dict],
+    interval_s: float = 5.0,
+):
+    """Pull real aircraft from the live feed into the world every interval_s.
+
+    This is what makes the synthetic nodes fly real traffic: every aircraft
+    the feed reports over the metro becomes a world aircraft the nodes echo
+    (delay/Doppler from its real position and velocity), cast as ADS-B or
+    dark by frac_live_dark.  Unlike the opt-in adsb.lol relay
+    (_push_real_adsb), which only decorates the map with a second world's
+    positions, these aircraft ARE in the simulated world — so their ADS-B
+    tags reach the server through the ordinary node frames and 1 Hz push,
+    untagged, as simulated-world traffic.
+
+    The backend's live_adsb_enabled flag (via _poll_simulation_config)
+    pauses the pull and clears the live aircraft; re-enabling resumes on the
+    next poll.  A failed fetch leaves the world alone: aircraft coast on
+    their last velocity and expire only after the world's staleness window.
+    """
+    client = LiveAdsbClient(areas, base_url=feed_url)
+    loop = asyncio.get_event_loop()
+    log.info(
+        "Live ADS-B seeding started (feed=%s, %d area(s), interval=%.0fs)",
+        feed_url,
+        len(client.areas),
+        interval_s,
+    )
+    last_live = -1
+    was_enabled = True
+    while orchestrator._running:
+        await asyncio.sleep(interval_s)
+        if orchestrator.world is None:
+            continue
+        if not orchestrator.live_adsb_enabled:
+            if was_enabled:
+                n = orchestrator.world.clear_live_aircraft()
+                log.info("Live ADS-B seeding paused by simulation config (%d live aircraft removed)", n)
+                was_enabled = False
+            continue
+        was_enabled = True
+        try:
+            rows = await loop.run_in_executor(None, client.fetch_all)
+        except Exception as e:  # defensive: the client swallows its own errors
+            log.debug("Live ADS-B fetch failed: %s", e)
+            continue
+        if not any(client.last_status.values()):
+            log.warning("Live ADS-B feed unreachable (%s) — live aircraft coasting", client.last_error)
+            continue
+        stats = orchestrator.world.ingest_live_aircraft(rows)
+        if stats["live"] != last_live:
+            n_dark = sum(1 for ac in orchestrator.world.live_aircraft.values() if not ac.has_adsb)
+            log.info(
+                "Live ADS-B: %d aircraft in world (%d dark, frac_live_dark=%.2f; +%d new this poll)",
+                stats["live"],
+                n_dark,
+                orchestrator.world.frac_live_dark,
+                stats["created"],
+            )
+            last_live = stats["live"]
+
+
 async def _poll_simulation_config(
     orchestrator: FleetOrchestrator,
     base_url: str,
@@ -955,15 +1029,28 @@ async def _poll_simulation_config(
                     orchestrator.world.min_aircraft = int(cfg["min_aircraft"])
                 if "max_aircraft" in cfg:
                     orchestrator.world.max_aircraft = int(cfg["max_aircraft"])
+                # Live feed knobs.  Fallbacks match the world/orchestrator
+                # defaults (0.0 dark, seeding on) so an older backend that
+                # ships neither key changes nothing.  set_frac_live_dark
+                # re-casts the aircraft already in the air, so the slider
+                # takes effect at the next poll rather than the next fleet
+                # turnover.
+                n_live_dark = orchestrator.world.set_frac_live_dark(float(cfg.get("frac_live_dark", 0.0)))
+                orchestrator.live_adsb_enabled = bool(cfg.get("live_adsb_enabled", True))
                 last_updated_at = updated_at
                 log.info(
-                    "Simulation config updated: anomalous=%.2f drone=%.2f dark=%.2f adsb_outage=%.2f aircraft=%d–%d",
+                    "Simulation config updated: anomalous=%.2f drone=%.2f dark=%.2f adsb_outage=%.2f "
+                    "aircraft=%d–%d live_adsb=%s live_dark=%.2f (%d/%d live aircraft dark)",
                     orchestrator.world.frac_anomalous,
                     orchestrator.world.frac_drone,
                     orchestrator.world.frac_dark,
                     orchestrator.world.frac_adsb_outage,
                     orchestrator.world.min_aircraft,
                     orchestrator.world.max_aircraft,
+                    "on" if orchestrator.live_adsb_enabled else "off",
+                    orchestrator.world.frac_live_dark,
+                    n_live_dark,
+                    len(orchestrator.world.live_aircraft),
                 )
 
                 # Scene-change detection. Absent scene stamp (stale volume,
@@ -1296,18 +1383,43 @@ async def main_async(args):
     # time metro config alone switched this on — the "realistic mix" arrived
     # with ghost planes attached.
     adsb_metros = getattr(args, "metros", "") or getattr(args, "metro", "") or ""
-    if getattr(args, "real_adsb", False) and args.validation_url and adsb_metros:
-        metro_areas = _parse_metro_areas(adsb_metros)
-        if metro_areas:
+    # Live ADS-B seeding: real aircraft over the metro join the simulated
+    # world and are echoed by the synthetic nodes (see _seed_live_adsb).
+    # Needs an area to query, so it is scoped like the relay below.
+    live_url = (getattr(args, "live_adsb_url", "") or "").strip()
+    live_seeding = False
+    if live_url and adsb_metros:
+        live_areas = _parse_metro_areas(adsb_metros)
+        if live_areas:
+            live_seeding = True
             tasks.append(
-                _push_real_adsb(
+                _seed_live_adsb(
                     orchestrator,
-                    args.validation_url,
-                    areas=metro_areas,
-                    interval_s=10.0,
+                    live_url,
+                    areas=live_areas,
+                    interval_s=max(1.0, float(getattr(args, "live_adsb_interval", 5.0) or 5.0)),
                 )
             )
-    elif adsb_metros and args.validation_url:
+    elif live_url:
+        log.warning("Live ADS-B seeding needs --metro/--metros to know where to look — disabled")
+    if getattr(args, "real_adsb", False) and args.validation_url and adsb_metros:
+        if live_seeding:
+            # Both would push the same real hexes, one tagged source=real and
+            # one as simulated-world traffic, and the server keys its cache
+            # by hex — the two writers would take turns owning each entry.
+            log.warning("--real-adsb ignored: live ADS-B seeding already carries real traffic in the simulated world")
+        else:
+            metro_areas = _parse_metro_areas(adsb_metros)
+            if metro_areas:
+                tasks.append(
+                    _push_real_adsb(
+                        orchestrator,
+                        args.validation_url,
+                        areas=metro_areas,
+                        interval_s=10.0,
+                    )
+                )
+    elif adsb_metros and args.validation_url and not live_seeding:
         log.info("Real ADS-B relay disabled (pass --real-adsb to inject adsb.lol traffic)")
 
     if args.validate and args.validation_url:
@@ -1423,6 +1535,21 @@ def main():
         "claiming). Off by default: the relay used to switch on with metro "
         "config alone, and the decoy transponders it added produced ghost "
         "planes on the map.",
+    )
+    parser.add_argument(
+        "--live-adsb-url",
+        type=str,
+        default="",
+        help="Base URL of an adsb.lol-shaped live feed (e.g. https://adsb.retina.fm). "
+        "Real aircraft over the --metro/--metros areas then join the simulated "
+        "world and are echoed by the synthetic nodes; the backend's "
+        "frac_live_dark casts a share of them as dark. Empty = off.",
+    )
+    parser.add_argument(
+        "--live-adsb-interval",
+        type=float,
+        default=5.0,
+        help="Seconds between live feed polls (min 1)",
     )
     parser.add_argument(
         "--no-hub-radial",
