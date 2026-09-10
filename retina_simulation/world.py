@@ -24,6 +24,7 @@ import hashlib
 import json
 import math
 import random
+import time
 from dataclasses import asdict, dataclass, field
 
 C_KM_US = 0.299792458  # speed of light km/μs
@@ -119,6 +120,10 @@ _ADSB_OUTAGE_DURATION_S = (60.0, 240.0)
 # sooner: verification should not have to wait for a whole fleet turnover.
 _ADSB_OUTAGE_RUNTIME_START_S = (5.0, 60.0)
 
+# Unit conversions for the feed's tar1090 fields.
+_KNOTS_TO_KM_S = 1.852 / 3600.0
+_FT_TO_KM = 0.0003048
+
 
 @dataclass
 class SimulatedAircraft:
@@ -172,6 +177,18 @@ class SimulatedAircraft:
     # World clock as of the last step(), so adsb_silent can be a plain
     # property: the aircraft has no back-reference to its world.
     sim_now_s: float = 0.0
+    # Provenance.  "sim" = spawned by the world's own planner; "live" = a real
+    # aircraft mirrored from an ADS-B feed (SimulationWorld.ingest_live_aircraft).
+    # A live aircraft flies its real track: no waypoints, no separation
+    # slowing, no lifetime — it leaves when the feed stops reporting it.
+    source: str = "sim"
+    # The real transponder hex of a live aircraft, kept even while the world
+    # casts it as dark (adsb_hex is None then), so the cast can flip back
+    # without a re-ingest and the feed can find the aircraft again by key.
+    live_hex: str | None = None
+    # World clock at the last feed update; a live aircraft not refreshed for
+    # SimulationWorld.live_stale_s is dropped.
+    live_seen_s: float = 0.0
 
     @property
     def adsb_silent(self) -> bool:
@@ -401,6 +418,20 @@ class SimulationWorld:
         # default so nothing changes for anyone who does not set it.
         self.frac_adsb_outage: float = 0.0
         # remaining fraction = commercial aircraft with ADS-B
+        #
+        # Live-derived traffic (ingest_live_aircraft): the share of feed
+        # aircraft the world casts as DARK — mirrored without their
+        # transponder, so the synthetic nodes echo a real trajectory the
+        # server holds no ADS-B tag for.  Orthogonal to frac_dark, which only
+        # rolls the world's own synthetic spawns, and to min/max_aircraft,
+        # which only count them: the feed decides how many live aircraft
+        # there are.  The cast is a stable per-hex hash (live_role_is_dark),
+        # so moving the knob re-partitions the aircraft already in the air
+        # instead of re-rolling them.
+        self.frac_live_dark: float = 0.0
+        # Feed aircraft not refreshed for this long (world seconds) are dropped.
+        self.live_stale_s: float = 60.0
+        self.live_aircraft: dict[str, SimulatedAircraft] = {}
         # Hub-radial flight planning: when metro_cells is non-empty, this
         # fraction of spawns is routed through a metro cell; the rest are
         # en-route traffic on the inter-metro waypoint net. Empty cells →
@@ -750,16 +781,25 @@ class SimulationWorld:
         # Expired non-drones head for the edge before the retire filter sees
         # them past the edge (see _route_out / _should_retire).
         for ac in self.aircraft:
+            if ac.source == "live":
+                continue
             if not ac.departing and ac.object_type != "drone" and self._time - ac.created_at >= ac.lifetime_s:
                 self._route_out(ac)
 
-        # Retire expired aircraft (edge-gated — see _should_retire)
-        self.aircraft = [ac for ac in self.aircraft if not self._should_retire(ac)]
+        # Retire expired aircraft (edge-gated — see _should_retire).  Live
+        # aircraft leave when the feed stops reporting them instead.
+        self._expire_live_aircraft()
+        self.aircraft = [ac for ac in self.aircraft if ac.source == "live" or not self._should_retire(ac)]
 
-        # Spawn to maintain target count
-        while len(self.aircraft) < self.min_aircraft:
+        # Spawn to maintain target count — synthetic aircraft only.  The feed
+        # sets the live population; min/max_aircraft stay the operator's
+        # knobs for the synthetic traffic layered on top of it, so raising
+        # live traffic never starves synthetic spawns and vice versa.
+        n_synth = self.synthetic_count()
+        while n_synth < self.min_aircraft:
             self.aircraft.append(self._spawn_aircraft(mode))
-        if len(self.aircraft) < self.max_aircraft and random.random() < 0.01:
+            n_synth += 1
+        if n_synth < self.max_aircraft and random.random() < 0.01:
             self.aircraft.append(self._spawn_aircraft(mode))
 
         # Update each aircraft
@@ -807,6 +847,10 @@ class SimulationWorld:
                     break
         blend = 1.0 - math.exp(-dt / 3.0)
         for ac in flow:
+            if ac.source == "live":
+                # Real traffic is a leader for synthetic trailers to yield
+                # to, never a trailer: its speed is the feed's to set.
+                continue
             base = ac.base_speed_km_s or ac.speed_km_s
             target = base * 0.7 if ac.object_id in slowed else base
             ac.speed_km_s += (target - ac.speed_km_s) * blend
@@ -836,6 +880,14 @@ class SimulationWorld:
 
     def _update_aircraft(self, ac: SimulatedAircraft, dt: float):
         """Update aircraft position and navigate toward waypoints."""
+        if ac.source == "live":
+            # The feed owns the trajectory; between polls the aircraft
+            # coasts on its last reported velocity.  No waypoints, no
+            # perturbation, no anomaly events — those would put the echo
+            # somewhere the real aircraft is not.
+            self._dead_reckon(ac, dt)
+            return
+
         # ── Fire scheduled mid-flight anomaly event ──────────────────────────
         if ac.anomaly_event and not ac.anomaly_fired and self._time >= ac.anomaly_trigger_at:
             self._fire_anomaly_event(ac)
@@ -1147,9 +1199,163 @@ class SimulationWorld:
                 "adsb_callsign": ac.adsb_callsign,
                 "adsb_silent": ac.adsb_silent,
                 "anomaly_event": ac.anomaly_event,
+                "source": ac.source,
             }
             for ac in self.aircraft
         ]
+
+    # ── Live ADS-B seeding ───────────────────────────────────────────────────
+
+    def synthetic_count(self) -> int:
+        """Aircraft spawned by this world's own planner (excludes live)."""
+        return sum(1 for ac in self.aircraft if ac.source != "live")
+
+    def live_role_is_dark(self, hex_code: str) -> bool:
+        """Whether a feed aircraft is cast as dark at the current frac_live_dark.
+
+        A stable hash of the hex against the fraction rather than a random
+        roll: the same aircraft gets the same answer on every ingest, so a
+        knob change flips exactly the aircraft the new fraction implies
+        (raising it only ever turns more aircraft dark, lowering it only
+        ever restores transponders) and nothing flickers between polls.
+        """
+        if self.frac_live_dark <= 0.0:
+            return False
+        if self.frac_live_dark >= 1.0:
+            return True
+        u = int(hashlib.sha256(hex_code.encode()).hexdigest()[:8], 16) / 0x100000000
+        return u < self.frac_live_dark
+
+    def _cast_live_role(self, ac: SimulatedAircraft) -> None:
+        """Apply the dark/ADS-B cast to one live aircraft.
+
+        Dark means the world mirrors the aircraft WITHOUT its transponder:
+        has_adsb off and adsb_hex None, so the node frames tag no echo with
+        it, the ADS-B push omits it, and the ground truth keys it by its
+        ``live-<hex>`` object id — exactly the shape of a synthetic dark
+        spawn, with a real trajectory underneath.
+        """
+        dark = self.live_role_is_dark(ac.live_hex or "")
+        ac.has_adsb = not dark
+        ac.adsb_hex = None if dark else ac.live_hex
+
+    def set_frac_live_dark(self, value: float) -> int:
+        """Set the live dark share and re-cast every live aircraft in the air.
+
+        Returns how many live aircraft are dark afterwards.
+        """
+        self.frac_live_dark = min(1.0, max(0.0, float(value)))
+        for ac in self.live_aircraft.values():
+            self._cast_live_role(ac)
+        return sum(1 for ac in self.live_aircraft.values() if not ac.has_adsb)
+
+    def ingest_live_aircraft(self, rows: list[dict], now_wall: float | None = None) -> dict:
+        """Merge one feed poll (live_adsb.parse_point_response rows) into the world.
+
+        A row's position is advanced from its capture time to ``now_wall``
+        along its reported velocity before it is applied, so a 10 s old fix
+        does not drag the echo 2 km behind the real aircraft.  Known hexes
+        are updated in place (their ids, and so their ground-truth keys, are
+        stable); new ones join as ``live-<hex>`` aircraft.  Rows never make
+        an aircraft leave — that is _expire_live_aircraft's job, on the
+        world clock, so a missed poll is a coast and not a blink.
+        """
+        now_wall = time.time() if now_wall is None else now_wall
+        created = updated = 0
+        for row in rows:
+            hex_code = str(row.get("hex") or "").strip().lower()
+            lat = row.get("lat")
+            lon = row.get("lon")
+            if not hex_code or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+                continue
+            speed_km_s = max(0.0, float(row.get("gs") or 0.0)) * _KNOTS_TO_KM_S
+            heading = float(row.get("track") or 0.0) % 360.0
+            alt_km = max(0.05, float(row.get("alt_baro") or 0.0) * _FT_TO_KM)
+            vel_up = float(row.get("baro_rate") or 0.0) * _FT_TO_KM / 60.0
+            heading_rad = math.radians(heading)
+            vel_east = speed_km_s * math.sin(heading_rad)
+            vel_north = speed_km_s * math.cos(heading_rad)
+            captured_at = row.get("captured_at")
+            age = now_wall - captured_at if isinstance(captured_at, (int, float)) else 0.0
+            age = min(max(age, 0.0), self.live_stale_s)
+            lat = float(lat) + (vel_north / R_EARTH) * (180 / math.pi) * age
+            lon = float(lon) + (vel_east / (R_EARTH * math.cos(math.radians(float(lat))))) * (180 / math.pi) * age
+            alt_km = max(0.05, alt_km + vel_up * age)
+            flight = str(row.get("flight") or "").strip() or None
+
+            ac = self.live_aircraft.get(hex_code)
+            if ac is None:
+                ac = SimulatedAircraft(
+                    object_id=f"live-{hex_code}",
+                    lat=lat,
+                    lon=lon,
+                    alt_km=alt_km,
+                    vel_east=vel_east,
+                    vel_north=vel_north,
+                    vel_up=vel_up,
+                    heading_deg=heading,
+                    speed_km_s=speed_km_s,
+                    base_speed_km_s=speed_km_s,
+                    object_type="aircraft",
+                    adsb_callsign=flight,
+                    created_at=self._time,
+                    lifetime_s=float("inf"),
+                    waypoints=[],
+                    waypoint_idx=0,
+                    sim_now_s=self._time,
+                    source="live",
+                    live_hex=hex_code,
+                )
+                self._cast_live_role(ac)
+                # Same outage roll a synthetic transponder aircraft gets at
+                # spawn: frac_adsb_outage is a fraction of the ADS-B
+                # population, and live ADS-B aircraft are part of it.
+                ac.adsb_outage_start_s, ac.adsb_outage_end_s = self._roll_adsb_outage(ac.has_adsb, _ADSB_OUTAGE_START_S)
+                self.live_aircraft[hex_code] = ac
+                self.aircraft.append(ac)
+                created += 1
+            else:
+                ac.lat = lat
+                ac.lon = lon
+                ac.alt_km = alt_km
+                ac.vel_east = vel_east
+                ac.vel_north = vel_north
+                ac.vel_up = vel_up
+                ac.heading_deg = heading
+                ac.speed_km_s = speed_km_s
+                ac.base_speed_km_s = speed_km_s
+                if flight:
+                    ac.adsb_callsign = flight
+                self._cast_live_role(ac)
+                updated += 1
+            ac.live_seen_s = self._time
+            ac.sim_now_s = self._time
+        return {"created": created, "updated": updated, "live": len(self.live_aircraft)}
+
+    def _expire_live_aircraft(self) -> int:
+        """Drop live aircraft the feed has not refreshed within live_stale_s."""
+        stale = [h for h, ac in self.live_aircraft.items() if self._time - ac.live_seen_s > self.live_stale_s]
+        if not stale:
+            return 0
+        for h in stale:
+            del self.live_aircraft[h]
+        gone = {f"live-{h}" for h in stale}
+        self.aircraft = [ac for ac in self.aircraft if ac.object_id not in gone]
+        return len(stale)
+
+    def clear_live_aircraft(self) -> int:
+        """Remove every live aircraft (the feed was switched off)."""
+        n = len(self.live_aircraft)
+        if n:
+            self.live_aircraft.clear()
+            self.aircraft = [ac for ac in self.aircraft if ac.source != "live"]
+        return n
+
+    def _dead_reckon(self, ac: SimulatedAircraft, dt: float) -> None:
+        """Coast a live aircraft on its last reported velocity."""
+        ac.lat += (ac.vel_north / R_EARTH) * (180 / math.pi) * dt
+        ac.lon += (ac.vel_east / (R_EARTH * math.cos(math.radians(ac.lat)))) * (180 / math.pi) * dt
+        ac.alt_km = max(0.05, ac.alt_km + ac.vel_up * dt)
 
     # ── ML Training Data Batch Export ────────────────────────────────────────
 

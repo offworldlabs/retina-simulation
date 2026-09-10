@@ -146,7 +146,14 @@ class _StubWorld:
     min_aircraft = 1
     max_aircraft = 1
 
+    frac_live_dark = 0.0
+    live_aircraft: dict = {}
+
     def schedule_adsb_outages(self):
+        return 0
+
+    def set_frac_live_dark(self, value):
+        self.frac_live_dark = value
         return 0
 
 
