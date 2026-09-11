@@ -43,9 +43,17 @@ def _num(v, default=0.0) -> float:
 def parse_point_response(data: dict, fetched_at: float) -> list[dict]:
     """Normalise one ``/v2/point`` payload into world-ready rows.
 
-    Rows without a position, and aircraft reported on the ground (tar1090's
-    ``alt_baro: "ground"``), are dropped: a parked airliner is not a radar
-    target the fleet should be echoing at zero altitude.
+    Rows without a position, or whose ``alt_baro`` is neither numeric nor the
+    ``"ground"`` sentinel, are dropped — there is nothing to fly.
+
+    A row IS emitted for an aircraft on the ground, flagged ``on_ground`` with
+    ``alt_baro`` 0.0.  adsb.retina.fm encodes ground as a numeric 0 (adsb.lol
+    says ``"ground"``), so both spellings — and any non-positive altitude —
+    count.  The world does not put a parked aircraft in the air; it uses the
+    ground row as the one positive signal that an aircraft has LANDED, and
+    retires it on the spot (see SimulationWorld.ingest_live_aircraft).  Dropping
+    those rows instead left landed aircraft "flying" for another staleness
+    window (146 s observed).
     """
     rows = []
     for ac in data.get("ac", []) or []:
@@ -57,7 +65,12 @@ def parse_point_response(data: dict, fetched_at: float) -> list[dict]:
         if not hex_code or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
             continue
         alt_baro = ac.get("alt_baro")
-        if alt_baro == "ground" or not isinstance(alt_baro, (int, float)):
+        if alt_baro == "ground":
+            on_ground, alt_ft = True, 0.0
+        elif isinstance(alt_baro, (int, float)) and not isinstance(alt_baro, bool):
+            on_ground = alt_baro <= 0
+            alt_ft = 0.0 if on_ground else float(alt_baro)
+        else:
             continue
         seen_pos = ac.get("seen_pos")
         captured_at = fetched_at - seen_pos if isinstance(seen_pos, (int, float)) else fetched_at
@@ -67,7 +80,8 @@ def parse_point_response(data: dict, fetched_at: float) -> list[dict]:
                 "flight": (ac.get("flight") or "").strip(),
                 "lat": float(lat),
                 "lon": float(lon),
-                "alt_baro": float(alt_baro),  # ft
+                "alt_baro": alt_ft,  # ft, 0.0 when on_ground
+                "on_ground": on_ground,
                 "gs": _num(ac.get("gs")),  # knots
                 "track": _num(ac.get("track")),  # deg
                 "baro_rate": _num(ac.get("baro_rate")),  # ft/min
