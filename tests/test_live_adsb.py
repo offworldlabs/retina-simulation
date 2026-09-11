@@ -302,6 +302,52 @@ class TestAltitudeJumpGuard:
         assert math.isclose(ac.alt_km, 11.2, rel_tol=1e-6)
         assert ac.live_alt_reject_s is None
 
+    def test_a_flip_flopping_feed_is_never_adopted(self):
+        # N6389R replayed (2026-09-10): the feed disagreed with the coasted
+        # altitude for 97 s straight, but across FOUR different corrupt values.
+        # A run that does not agree with itself is the feed serving other
+        # aircraft's levels, so nothing in it may ever be adopted — however
+        # long it lasts — and the returning truth must be taken at once.
+        w = _world()
+        self._poll(w, 1000.0, 1.2)
+        ac = w.live_aircraft["ab1388"]
+        wall = 1000.0
+        rejected = 0
+        for alt_km, polls in ((11.2, 5), (3.3, 2), (11.1, 10), (9.2, 3)):  # 100 s, four values
+            for _ in range(polls):
+                w.step(5.0, mode="adsb")
+                wall += 5.0
+                rejected += self._poll(w, wall, alt_km)["alt_rejected"]
+                assert math.isclose(ac.alt_km, 1.2, rel_tol=1e-6)  # never left the coasted truth
+        assert rejected == 20  # every reading counted, none adopted
+
+        w.step(5.0, mode="adsb")
+        wall += 5.0
+        assert self._poll(w, wall, 1.2)["alt_rejected"] == 0  # truth back, accepted immediately
+        assert math.isclose(ac.alt_km, 1.2, rel_tol=1e-6)
+        assert ac.live_alt_reject_s is None
+
+    def test_a_corrupt_spawn_altitude_is_recovered_after_a_minute(self):
+        # The adopt path exists for a wrong HELD altitude: the aircraft was
+        # created from a corrupt row, so the feed's consistent truth is the
+        # side that keeps getting rejected.
+        w = _world()
+        self._poll(w, 1000.0, 11.2)
+        ac = w.live_aircraft["ab1388"]
+        assert math.isclose(ac.alt_km, 11.2, rel_tol=1e-6)
+        wall = 1000.0
+        for _ in range(12):  # 60 s of consistent truth, all rejected
+            w.step(5.0, mode="adsb")
+            wall += 5.0
+            assert self._poll(w, wall, 1.2)["alt_rejected"] == 1
+        assert math.isclose(ac.alt_km, 11.2, rel_tol=1e-6)  # not adopted early
+
+        w.step(5.0, mode="adsb")
+        wall += 5.0
+        assert self._poll(w, wall, 1.2)["alt_rejected"] == 0
+        assert math.isclose(ac.alt_km, 1.2, rel_tol=1e-6)
+        assert ac.live_alt_reject_s is None
+
     def test_a_normal_descent_is_never_rejected(self):
         w = _world()
         alt = 3.0

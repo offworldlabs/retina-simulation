@@ -131,9 +131,18 @@ _FT_TO_KM = 0.0003048
 # separates the two cases: a real aircraft moves under 150 m in a 5 s poll even
 # at 6,000 ft/min, while the observed corruption is 7–10 km.
 _LIVE_ALT_JUMP_KM = 1.0
-# A reading that keeps disagreeing for a full minute is a re-level we mis-read,
-# not a glitch — adopt it.  That bounds a persistently wrong feed altitude to a
-# minute of wrongness instead of pinning the aircraft at the old one forever.
+# A SELF-CONSISTENT run of rejected readings — every one within
+# _LIVE_ALT_JUMP_KM of the last — that lasts a full minute is a wrong HELD
+# altitude (a corrupt spawn, or a corrupt value adopted earlier), so adopt it
+# and bound the wrongness to a minute instead of pinning the aircraft forever.
+# Consistency is what makes that safe: replaying N6389R (2026-09-10) the feed
+# disagreed with the coasted altitude for 97 s straight across FOUR different
+# corrupt values (+10.0 km for 22 s, +2.1 km for 7 s, +9.9 km for 48 s, +8.0 km
+# for 13 s, then truth).  Adopting on elapsed time alone would have taken
+# +9.9 km at the 60 s mark and then rejected the RETURNING TRUTH as a fresh
+# >1 km jump for another minute — worse than no guard at all.  A genuinely
+# re-levelling aircraft never jumps _LIVE_ALT_JUMP_KM between polls, so its
+# readings track the coasted altitude and never open a run at all.
 _LIVE_ALT_ADOPT_S = 60.0
 
 
@@ -206,8 +215,14 @@ class SimulatedAircraft:
     live_seen_s: float = 0.0
     # World clock at the FIRST of the current run of rejected feed altitudes
     # (SimulationWorld.ingest_live_aircraft's jump guard); None whenever the
-    # last reading was accepted.  A run lasting _LIVE_ALT_ADOPT_S is adopted.
+    # last reading was accepted.  A SELF-CONSISTENT run lasting
+    # _LIVE_ALT_ADOPT_S is adopted.
     live_alt_reject_s: float | None = None
+    # The last REJECTED altitude (km), so the guard can tell a run that agrees
+    # with itself — one wrong held altitude, worth adopting once it has stood
+    # for _LIVE_ALT_ADOPT_S — from the feed flipping between several other
+    # aircraft's levels, which is never a re-level and must never be adopted.
+    live_alt_reject_km: float = 0.0
 
     @property
     def adsb_silent(self) -> bool:
@@ -1366,17 +1381,30 @@ class SimulationWorld:
                 # A disagreement past _LIVE_ALT_JUMP_KM is the feed serving
                 # someone else's cruise level: keep the coasted altitude but
                 # apply the rest of the row — position, velocities and
-                # baro_rate were right in every corrupt row observed — unless
-                # the disagreement has stood for _LIVE_ALT_ADOPT_S, in which
-                # case it is the aircraft that changed and not the feed.
-                stuck_s = None if ac.live_alt_reject_s is None else self._time - ac.live_alt_reject_s
-                if abs(alt_km - ac.alt_km) > _LIVE_ALT_JUMP_KM and (stuck_s is None or stuck_s < _LIVE_ALT_ADOPT_S):
-                    if ac.live_alt_reject_s is None:
+                # baro_rate were right in every corrupt row observed.  The one
+                # escape is a SELF-CONSISTENT run of rejections (every reading
+                # within _LIVE_ALT_JUMP_KM of the one before) lasting
+                # _LIVE_ALT_ADOPT_S: that is the altitude we HOLD being wrong,
+                # not the feed.  A reading that disagrees with the previous
+                # REJECTED one restarts the run instead, because a feed
+                # flipping between values — N6389R, 97 s over four corrupt
+                # altitudes — is never an aircraft changing level.
+                if abs(alt_km - ac.alt_km) > _LIVE_ALT_JUMP_KM:
+                    if ac.live_alt_reject_s is None or abs(alt_km - ac.live_alt_reject_km) > _LIVE_ALT_JUMP_KM:
                         ac.live_alt_reject_s = self._time
-                    alt_rejected += 1
+                        ac.live_alt_reject_km = alt_km
+                        alt_rejected += 1
+                    elif self._time - ac.live_alt_reject_s >= _LIVE_ALT_ADOPT_S:
+                        ac.alt_km = alt_km
+                        ac.live_alt_reject_s = None
+                        ac.live_alt_reject_km = 0.0
+                    else:
+                        ac.live_alt_reject_km = alt_km
+                        alt_rejected += 1
                 else:
                     ac.alt_km = alt_km
                     ac.live_alt_reject_s = None
+                    ac.live_alt_reject_km = 0.0
                 ac.vel_east = vel_east
                 ac.vel_north = vel_north
                 ac.vel_up = vel_up
