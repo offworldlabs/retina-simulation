@@ -124,6 +124,18 @@ _ADSB_OUTAGE_RUNTIME_START_S = (5.0, 60.0)
 _KNOTS_TO_KM_S = 1.852 / 3600.0
 _FT_TO_KM = 0.0003048
 
+# Altitude sanity for live feed rows.  adsb.retina.fm sometimes serves ANOTHER
+# aircraft's cruise altitude in a low GA row's alt_baro (+23k…+33k ft over truth,
+# flipping between polls, persisting up to ~50 s), and every row carries
+# type "other" with no alt_geom — there is no feed field to filter on.  Scale
+# separates the two cases: a real aircraft moves under 150 m in a 5 s poll even
+# at 6,000 ft/min, while the observed corruption is 7–10 km.
+_LIVE_ALT_JUMP_KM = 1.0
+# A reading that keeps disagreeing for a full minute is a re-level we mis-read,
+# not a glitch — adopt it.  That bounds a persistently wrong feed altitude to a
+# minute of wrongness instead of pinning the aircraft at the old one forever.
+_LIVE_ALT_ADOPT_S = 60.0
+
 
 @dataclass
 class SimulatedAircraft:
@@ -186,9 +198,16 @@ class SimulatedAircraft:
     # casts it as dark (adsb_hex is None then), so the cast can flip back
     # without a re-ingest and the feed can find the aircraft again by key.
     live_hex: str | None = None
-    # World clock at the last feed update; a live aircraft not refreshed for
-    # SimulationWorld.live_stale_s is dropped.
+    # World clock of the last feed FIX (the row's capture time mapped onto the
+    # world clock, not the time the poll carrying it arrived); a live aircraft
+    # whose newest fix is older than SimulationWorld.live_stale_s is dropped.
+    # Keying on the fix rather than the poll matters because the feed keeps
+    # echoing a stale row long after an aircraft stops transmitting.
     live_seen_s: float = 0.0
+    # World clock at the FIRST of the current run of rejected feed altitudes
+    # (SimulationWorld.ingest_live_aircraft's jump guard); None whenever the
+    # last reading was accepted.  A run lasting _LIVE_ALT_ADOPT_S is adopted.
+    live_alt_reject_s: float | None = None
 
     @property
     def adsb_silent(self) -> bool:
@@ -1256,17 +1275,43 @@ class SimulationWorld:
         along its reported velocity before it is applied, so a 10 s old fix
         does not drag the echo 2 km behind the real aircraft.  Known hexes
         are updated in place (their ids, and so their ground-truth keys, are
-        stable); new ones join as ``live-<hex>`` aircraft.  Rows never make
-        an aircraft leave — that is _expire_live_aircraft's job, on the
-        world clock, so a missed poll is a coast and not a blink.
+        stable); new ones join as ``live-<hex>`` aircraft.  A missed poll is a
+        coast and not a blink: absence never removes an aircraft, that is
+        _expire_live_aircraft's job on the world clock.
+
+        The feed is not trusted blindly, because it demonstrably lies:
+          * an ``on_ground`` row RETIRES a live aircraft immediately — the
+            only positive "it landed" signal there is, and the aircraft is
+            otherwise flown on into a 146 s ghost track;
+          * a row whose fix is already older than ``live_stale_s`` is skipped
+            outright — a fix that old is no evidence the aircraft is where
+            extrapolating it would put it;
+          * an altitude that disagrees with the coasted one by more than
+            _LIVE_ALT_JUMP_KM is held off (see the constant), while the rest
+            of the row is still applied.
         """
         now_wall = time.time() if now_wall is None else now_wall
-        created = updated = 0
+        created = updated = landed = alt_rejected = 0
         for row in rows:
             hex_code = str(row.get("hex") or "").strip().lower()
             lat = row.get("lat")
             lon = row.get("lon")
             if not hex_code or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+                continue
+            captured_at = row.get("captured_at")
+            raw_age = now_wall - captured_at if isinstance(captured_at, (int, float)) else 0.0
+            if raw_age > self.live_stale_s:
+                continue
+            if row.get("on_ground"):
+                # Landed: drop it the way _expire_live_aircraft would, now,
+                # instead of dead-reckoning a parked aircraft across the map
+                # for another staleness window.  An unknown hex is never
+                # created from a ground row — traffic on a taxiway is not a
+                # radar target the fleet should be echoing.
+                ac = self.live_aircraft.pop(hex_code, None)
+                if ac is not None:
+                    self.aircraft = [a for a in self.aircraft if a is not ac]
+                    landed += 1
                 continue
             speed_km_s = max(0.0, float(row.get("gs") or 0.0)) * _KNOTS_TO_KM_S
             heading = float(row.get("track") or 0.0) % 360.0
@@ -1275,9 +1320,7 @@ class SimulationWorld:
             heading_rad = math.radians(heading)
             vel_east = speed_km_s * math.sin(heading_rad)
             vel_north = speed_km_s * math.cos(heading_rad)
-            captured_at = row.get("captured_at")
-            age = now_wall - captured_at if isinstance(captured_at, (int, float)) else 0.0
-            age = min(max(age, 0.0), self.live_stale_s)
+            age = min(max(raw_age, 0.0), self.live_stale_s)
             lat = float(lat) + (vel_north / R_EARTH) * (180 / math.pi) * age
             lon = float(lon) + (vel_east / (R_EARTH * math.cos(math.radians(float(lat))))) * (180 / math.pi) * age
             alt_km = max(0.05, alt_km + vel_up * age)
@@ -1317,7 +1360,23 @@ class SimulationWorld:
             else:
                 ac.lat = lat
                 ac.lon = lon
-                ac.alt_km = alt_km
+                # Altitude jump guard.  ac.alt_km has been coasted to the world
+                # clock by _dead_reckon and the row's alt_km extrapolated to
+                # now_wall by vel_up * age, so the two are directly comparable.
+                # A disagreement past _LIVE_ALT_JUMP_KM is the feed serving
+                # someone else's cruise level: keep the coasted altitude but
+                # apply the rest of the row — position, velocities and
+                # baro_rate were right in every corrupt row observed — unless
+                # the disagreement has stood for _LIVE_ALT_ADOPT_S, in which
+                # case it is the aircraft that changed and not the feed.
+                stuck_s = None if ac.live_alt_reject_s is None else self._time - ac.live_alt_reject_s
+                if abs(alt_km - ac.alt_km) > _LIVE_ALT_JUMP_KM and (stuck_s is None or stuck_s < _LIVE_ALT_ADOPT_S):
+                    if ac.live_alt_reject_s is None:
+                        ac.live_alt_reject_s = self._time
+                    alt_rejected += 1
+                else:
+                    ac.alt_km = alt_km
+                    ac.live_alt_reject_s = None
                 ac.vel_east = vel_east
                 ac.vel_north = vel_north
                 ac.vel_up = vel_up
@@ -1328,12 +1387,28 @@ class SimulationWorld:
                     ac.adsb_callsign = flight
                 self._cast_live_role(ac)
                 updated += 1
-            ac.live_seen_s = self._time
+            # The FIX time on the world clock, not "now": expiry then measures
+            # the age of the aircraft's newest fix rather than the age of the
+            # last poll that happened to mention it.
+            ac.live_seen_s = self._time - age
             ac.sim_now_s = self._time
-        return {"created": created, "updated": updated, "live": len(self.live_aircraft)}
+        return {
+            "created": created,
+            "updated": updated,
+            "landed": landed,
+            "alt_rejected": alt_rejected,
+            "live": len(self.live_aircraft),
+        }
 
     def _expire_live_aircraft(self) -> int:
-        """Drop live aircraft the feed has not refreshed within live_stale_s."""
+        """Drop live aircraft whose newest feed FIX is older than live_stale_s.
+
+        live_seen_s is the fix's capture time on the world clock (set by
+        ingest_live_aircraft), so an aircraft that stops transmitting leaves
+        live_stale_s after its LAST FIX rather than live_stale_s after the feed
+        stops echoing that fix — the difference between ~115 s and ≤ 60 s of
+        ghost track for an aircraft the feed keeps repeating.
+        """
         stale = [h for h, ac in self.live_aircraft.items() if self._time - ac.live_seen_s > self.live_stale_s]
         if not stale:
             return 0

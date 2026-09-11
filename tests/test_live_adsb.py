@@ -32,6 +32,9 @@ def _row(hex_code="ab1388", **overrides) -> dict:
     return base
 
 
+_FT_PER_KM = 1.0 / 0.0003048  # feed altitudes are feet; the world thinks in km
+
+
 def _world(**knobs) -> SimulationWorld:
     w = SimulationWorld(center_lat=34.85, center_lon=-82.39)
     w.frac_anomalous = 0.0
@@ -71,17 +74,38 @@ class TestParsePointResponse:
         assert r["flight"] == "N81227"
         assert r["captured_at"] == 2000.0 - 11.0
         assert r["baro_rate"] == -192
+        assert r["on_ground"] is False
 
-    def test_drops_ground_and_positionless_rows(self):
+    def test_drops_positionless_and_altitudeless_rows(self):
         data = {
             "ac": [
-                {"hex": "aaaaaa", "lat": 34.0, "lon": -82.0, "alt_baro": "ground", "gs": 5},
                 {"hex": "bbbbbb", "alt_baro": 3000},
                 {"hex": "", "lat": 34.0, "lon": -82.0, "alt_baro": 3000},
+                {"hex": "dddddd", "lat": 34.0, "lon": -82.0},  # no alt_baro at all
+                {"hex": "eeeeee", "lat": 34.0, "lon": -82.0, "alt_baro": None},
                 {"hex": "cccccc", "lat": 34.0, "lon": -82.0, "alt_baro": 3000},
             ]
         }
         assert [r["hex"] for r in parse_point_response(data, 0.0)] == ["cccccc"]
+
+    def test_ground_rows_are_emitted_flagged(self):
+        # adsb.lol spells it "ground"; adsb.retina.fm serves a numeric 0 (and a
+        # negative altitude is no more airborne than 0 is).
+        data = {
+            "ac": [
+                {"hex": "aaaaaa", "lat": 34.0, "lon": -82.0, "alt_baro": "ground", "gs": 5},
+                {"hex": "bbbbbb", "lat": 34.0, "lon": -82.0, "alt_baro": 0},
+                {"hex": "cccccc", "lat": 34.0, "lon": -82.0, "alt_baro": -75},
+                {"hex": "dddddd", "lat": 34.0, "lon": -82.0, "alt_baro": 3000},
+            ]
+        }
+        rows = parse_point_response(data, 0.0)
+        assert [(r["hex"], r["on_ground"], r["alt_baro"]) for r in rows] == [
+            ("aaaaaa", True, 0.0),
+            ("bbbbbb", True, 0.0),
+            ("cccccc", True, 0.0),
+            ("dddddd", False, 3000.0),
+        ]
 
 
 class TestLiveAdsbClient:
@@ -123,7 +147,7 @@ class TestIngest:
     def test_creates_live_aircraft_with_real_kinematics(self):
         w = _world()
         stats = w.ingest_live_aircraft([_row()], now_wall=1000.0)
-        assert stats == {"created": 1, "updated": 0, "live": 1}
+        assert stats == {"created": 1, "updated": 0, "landed": 0, "alt_rejected": 0, "live": 1}
         ac = w.live_aircraft["ab1388"]
         assert ac.source == "live"
         assert ac.object_id == "live-ab1388"
@@ -148,7 +172,7 @@ class TestIngest:
         w.ingest_live_aircraft([_row()], now_wall=1000.0)
         first = w.live_aircraft["ab1388"]
         stats = w.ingest_live_aircraft([_row(lat=34.9, gs=200.0)], now_wall=1005.0)
-        assert stats == {"created": 0, "updated": 1, "live": 1}
+        assert stats == {"created": 0, "updated": 1, "landed": 0, "alt_rejected": 0, "live": 1}
         assert w.live_aircraft["ab1388"] is first
         assert first.lat > 34.88
         assert len([a for a in w.aircraft if a.source == "live"]) == 1
@@ -167,6 +191,56 @@ class TestIngest:
         assert "ab1388" not in w.live_aircraft
         assert all(a.source != "live" for a in w.aircraft)
 
+    def test_ground_row_retires_the_aircraft_at_once(self):
+        w = _world()
+        w.ingest_live_aircraft([_row()], now_wall=1000.0)
+        stats = w.ingest_live_aircraft([_row(on_ground=True, alt_baro=0.0)], now_wall=1000.0)
+        assert stats["landed"] == 1 and stats["live"] == 0
+        assert "ab1388" not in w.live_aircraft
+        assert all(a.source != "live" for a in w.aircraft)
+
+    def test_ground_row_never_creates_an_unknown_aircraft(self):
+        w = _world()
+        stats = w.ingest_live_aircraft([_row("ffffff", on_ground=True, alt_baro=0.0)], now_wall=1000.0)
+        assert stats == {"created": 0, "updated": 0, "landed": 0, "alt_rejected": 0, "live": 0}
+        assert not w.live_aircraft and not w.aircraft
+
+    def test_a_fix_older_than_the_stale_window_is_ignored(self):
+        w = _world(live_stale_s=60.0)
+        stats = w.ingest_live_aircraft([_row(captured_at=1000.0)], now_wall=1061.0)
+        assert stats["created"] == 0 and not w.live_aircraft
+
+        w.ingest_live_aircraft([_row()], now_wall=1000.0)
+        ac = w.live_aircraft["ab1388"]
+        seen_s, lat0 = ac.live_seen_s, ac.lat
+        stats = w.ingest_live_aircraft([_row(lat=40.0, captured_at=940.0)], now_wall=1001.0)
+        assert stats["updated"] == 0
+        assert ac.lat == lat0 and ac.live_seen_s == seen_s
+
+    def test_expiry_is_keyed_on_the_fix_age_not_the_poll(self):
+        # A 50 s old fix in a 60 s window has 10 s of life left, however fresh
+        # the poll that carried it was.
+        w = _world(live_stale_s=60.0)
+        w.ingest_live_aircraft([_row(captured_at=950.0)], now_wall=1000.0)
+        ac = w.live_aircraft["ab1388"]
+        assert math.isclose(ac.live_seen_s, w._time - 50.0)
+        for _ in range(9):
+            w.step(1.0, mode="adsb")
+        assert "ab1388" in w.live_aircraft
+        for _ in range(3):
+            w.step(1.0, mode="adsb")
+        assert "ab1388" not in w.live_aircraft
+
+    def test_a_fresh_fix_keeps_an_aircraft_alive(self):
+        w = _world(live_stale_s=60.0)
+        w.ingest_live_aircraft([_row(captured_at=950.0)], now_wall=1000.0)
+        for _ in range(9):
+            w.step(1.0, mode="adsb")
+        w.ingest_live_aircraft([_row(captured_at=1009.0)], now_wall=1009.0)
+        for _ in range(12):
+            w.step(1.0, mode="adsb")
+        assert "ab1388" in w.live_aircraft
+
     def test_clear_removes_every_live_aircraft(self):
         w = _world(min_aircraft=3)
         w.step(1.0, mode="adsb")
@@ -174,6 +248,72 @@ class TestIngest:
         assert len(w.aircraft) == 5
         assert w.clear_live_aircraft() == 2
         assert len(w.aircraft) == 3 and w.synthetic_count() == 3
+
+
+# ── altitude jump guard ──────────────────────────────────────────────────────
+
+
+class TestAltitudeJumpGuard:
+    """The feed serves another aircraft's cruise level in a low GA row.
+
+    Observed live on N6389R: alt_baro +23k…+33k ft over truth, flipping between
+    polls, so the pinned altitude the server solved at was kilometres wrong.
+    """
+
+    @staticmethod
+    def _poll(w: SimulationWorld, wall: float, alt_km: float, **overrides) -> dict:
+        return w.ingest_live_aircraft(
+            [_row(alt_baro=alt_km * _FT_PER_KM, baro_rate=0.0, captured_at=wall, **overrides)], now_wall=wall
+        )
+
+    def test_a_single_bad_reading_is_rejected_and_the_next_good_one_accepted(self):
+        w = _world()
+        self._poll(w, 1000.0, 1.2)
+        ac = w.live_aircraft["ab1388"]
+        w.step(5.0, mode="adsb")
+        assert self._poll(w, 1005.0, 1.2)["alt_rejected"] == 0
+
+        w.step(5.0, mode="adsb")
+        stats = self._poll(w, 1010.0, 11.2, lat=34.95)
+        assert stats["alt_rejected"] == 1
+        assert math.isclose(ac.alt_km, 1.2, rel_tol=1e-6)
+        assert ac.live_alt_reject_s is not None
+        assert math.isclose(ac.lat, 34.95, abs_tol=1e-6)  # the rest of the row still applies
+
+        w.step(5.0, mode="adsb")
+        assert self._poll(w, 1015.0, 1.2)["alt_rejected"] == 0
+        assert math.isclose(ac.alt_km, 1.2, rel_tol=1e-6)
+        assert ac.live_alt_reject_s is None
+
+    def test_a_disagreement_that_lasts_a_minute_is_adopted(self):
+        w = _world()
+        self._poll(w, 1000.0, 1.2)
+        ac = w.live_aircraft["ab1388"]
+        wall = 1000.0
+        for _ in range(12):  # 60 s of world time, all rejected
+            w.step(5.0, mode="adsb")
+            wall += 5.0
+            self._poll(w, wall, 11.2)
+        assert math.isclose(ac.alt_km, 1.2, rel_tol=1e-6)
+
+        w.step(5.0, mode="adsb")
+        wall += 5.0
+        assert self._poll(w, wall, 11.2)["alt_rejected"] == 0
+        assert math.isclose(ac.alt_km, 11.2, rel_tol=1e-6)
+        assert ac.live_alt_reject_s is None
+
+    def test_a_normal_descent_is_never_rejected(self):
+        w = _world()
+        alt = 3.0
+        self._poll(w, 1000.0, alt)
+        ac = w.live_aircraft["ab1388"]
+        wall = 1000.0
+        for _ in range(10):  # 0.1 km per 5 s poll ≈ 1,200 ft/min
+            w.step(5.0, mode="adsb")
+            wall += 5.0
+            alt -= 0.1
+            assert self._poll(w, wall, alt)["alt_rejected"] == 0
+        assert math.isclose(ac.alt_km, 2.0, rel_tol=1e-6)
 
 
 # ── independence from the synthetic knobs ────────────────────────────────────
