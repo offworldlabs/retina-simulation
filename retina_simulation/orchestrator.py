@@ -592,9 +592,11 @@ class FleetOrchestrator:
                     if now_t < next_send.get(node_id, 0.0):
                         continue
                     frame = self.world.generate_detections_for_node(node_id, timestamp_ms)
-                    if frame.get("delay"):  # only send non-empty frames
-                        send_tasks.append(self._send_frame_to_node(node_id, frame))
-                    # Schedule next send regardless of whether frame was non-empty
+                    # Empty frames go too, as real nodes send them: the server
+                    # marks its aircraft feed dirty per frame received, so a
+                    # node that stays quiet stalls the map's websocket and the
+                    # client's watchdog reads the silence as a dead connection.
+                    send_tasks.append(self._send_frame_to_node(node_id, frame))
                     next_send[node_id] = now_t + self.frame_interval
 
                 if send_tasks:
