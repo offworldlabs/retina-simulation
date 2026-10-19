@@ -22,8 +22,10 @@ jobs:
       # resolve the `retina-custody>=0.1.0` dependency on its own. The pin stays
       # generic in pyproject.toml on purpose: retina-server installs these libs
       # from local submodule paths, and a direct URL there would collide with
-      # "conflicting URLs for package retina-custody".
-      - run: uv pip install --system "retina-custody @ git+https://github.com/offworldlabs/retina-custody@v0.1.0"
+      # "conflicting URLs for package retina-custody". CI installs a commit, not
+      # the v0.1.0 tag: node.py needs the windowed hash chain, which no tag has
+      # yet. 294c0b0 is the commit retina-server's submodule pins.
+      - run: uv pip install --system "retina-custody @ git+https://github.com/offworldlabs/retina-custody@294c0b0625cae3678a2babe027c82a4747b05515"
 
       # Pinned deliberately: an unpinned linter picks up new rules on release
       # and turns a green branch red without anything in this repo changing.

@@ -5,7 +5,7 @@ Generates and streams synthetic detection data over TCP to the
 tracker server for testing. Implements the full RETINA node protocol:
 
   HELLO → CONFIG → REGISTER_KEY → (wait CONFIG_ACK, KEY_ACK)
-  → steady state (HEARTBEAT + signed DETECTION + CHAIN_ENTRY)
+  → steady state (HEARTBEAT + DETECTION, and a CHAIN_ENTRY per closed window)
 
 Supports three detection modes:
 
@@ -14,9 +14,14 @@ Supports three detection modes:
 3. With anomalous objects: objects that have no ADS-B correlation
 
 Chain of Custody:
-  - Each detection is signed with P-256 ECDSA (software stub)
-  - Hourly hash chain entries link all detections
-  - TSA timestamps and OTS proofs anchor chain entries
+  - Detection frames go out unsigned; a windowed hash chain (15 minutes by
+    default, --chain-window-s) commits to each window's frames
+  - Each closed window is sent as a CHAIN_ENTRY with its frame batch, signed
+    with P-256 ECDSA (software key)
+  - TSA timestamps and OTS proofs on chain entries with --tsa
+  - Keys and chain logs live in coverage_data/{keys,chains}/<node_id>
+  - A restart inside the last committed window opens no window before that
+    window has ended; frames until then go out but are not chained
   - IQ circular buffer runs for protocol testing
 
 Usage:
@@ -37,12 +42,19 @@ import json
 import math
 import os
 import random
+import select
 import socket
 import sys
 import threading
 import time
+import weakref
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from retina_custody.hash_chain import HashChainBuilder
+    from retina_custody.models import HashChainEntry
 
 # Speed of light km/μs
 C_KM_US = 0.299792458
@@ -50,6 +62,22 @@ C_KM_US = 0.299792458
 RETINA_VERSION = "1.0"
 HEARTBEAT_INTERVAL_S = 60
 CONFIG_ACK_TIMEOUT_S = 10
+CHAIN_CHECK_INTERVAL_S = 60
+# How long shutdown waits for the server to answer the last chain entry.
+FINAL_ACK_WAIT_S = 5.0
+CHAIN_LOG = "chain_log.jsonl"  # the builder's append-only log in its chain dir
+ISO_UTC = "%Y-%m-%dT%H:%M:%SZ"  # how the builder writes window_start and window_end
+
+# retina-server disconnects a node once its receive buffer passes 1 MiB without
+# a newline (backend/services/tcp_handler.py, _MAX_BUF_SIZE). It checks after
+# each 4 KiB read, and that read can already hold the start of the next message,
+# so a line must stay one read under the limit.
+SERVER_TCP_BUF_MAX = 1_048_576
+SERVER_TCP_READ_SIZE = 4096
+TCP_LINE_MAX = SERVER_TCP_BUF_MAX - SERVER_TCP_READ_SIZE
+
+# Node keys and chain logs: <checkout>/coverage_data/{keys,chains}/<node_id>.
+_COVERAGE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data")
 
 
 @dataclass
@@ -402,9 +430,33 @@ def _connect_tcp(host: str, port: int, max_retries: int = 0, cloudflare_host: st
             time.sleep(wait)
 
 
+# The heartbeat and listener threads write to the same socket as the main loop.
+# A CHAIN_ENTRY line can approach 1 MiB, which sendall writes in several pieces;
+# without a lock another thread's message could land in the middle of it. Each
+# socket has its own lock, so one node's slow uplink does not hold up the others.
+_SEND_LOCKS: "weakref.WeakKeyDictionary[socket.socket, threading.Lock]" = weakref.WeakKeyDictionary()
+_SEND_LOCKS_GUARD = threading.Lock()
+
+
+def _send_lock(sock: socket.socket) -> threading.Lock:
+    """The lock that serialises writes to this socket."""
+    with _SEND_LOCKS_GUARD:
+        lock = _SEND_LOCKS.get(sock)
+        if lock is None:
+            lock = _SEND_LOCKS[sock] = threading.Lock()
+        return lock
+
+
+def _encode_msg(msg: dict) -> bytes:
+    """Encode a message as one newline-terminated JSON line (ASCII)."""
+    return (json.dumps(msg) + "\n").encode("utf-8")
+
+
 def _send_msg(sock: socket.socket, msg: dict):
     """Send a newline-delimited JSON message."""
-    sock.sendall((json.dumps(msg) + "\n").encode("utf-8"))
+    line = _encode_msg(msg)
+    with _send_lock(sock):
+        sock.sendall(line)
 
 
 def _recv_msg(sock: socket.socket, timeout: float = CONFIG_ACK_TIMEOUT_S) -> dict | None:
@@ -516,12 +568,18 @@ def _perform_handshake(sock: socket.socket, config: NodeConfig, crypto_backend=N
             },
         )
         print(f"  → REGISTER_KEY (fp={crypto_backend.get_public_key_fingerprint()[:12]}...)", file=sys.stderr)
-        # Wait for KEY_ACK (non-blocking — best effort)
+        # Wait for KEY_ACK (best effort: a missing or rejected key is reported, not fatal)
         key_ack = _recv_msg(sock, timeout=5)
-        if key_ack and key_ack.get("type") == "KEY_ACK":
+        if not key_ack or key_ack.get("type") != "KEY_ACK":
+            print("  ! KEY_ACK not received (chain of custody may not verify)", file=sys.stderr)
+        elif key_ack.get("status") == "registered":
             print("  ← KEY_ACK — key registered", file=sys.stderr)
         else:
-            print("  ! KEY_ACK not received (chain of custody may not verify)", file=sys.stderr)
+            print(
+                f"  ! KEY_ACK {key_ack.get('status', 'without a status')}: "
+                f"{key_ack.get('reason', 'no reason given')} — key not registered",
+                file=sys.stderr,
+            )
 
     return True
 
@@ -551,74 +609,355 @@ def _heartbeat_loop(sock: socket.socket, config: NodeConfig, stop_event: threadi
 # ── Server message listener ──────────────────────────────────────────────────
 
 
-def _listener_loop(sock: socket.socket, config: NodeConfig, stop_event: threading.Event):
-    """Listen for server messages (CONFIG_REQUEST, etc.) on a background thread."""
-    sock.settimeout(1.0)
+class _AwaitingAcks:
+    """Chain entries written to one connection and not yet acknowledged, oldest first.
+
+    The server answers each CHAIN_ENTRY line with one CHAIN_ENTRY_ACK, in the
+    order the lines arrived. A stored entry's ack names it by entry_hash. A
+    rejected one (malformed, or no HELLO on the connection) has a null
+    entry_hash, so it answers the oldest entry still waiting. Acks never cross
+    connections, so each connection has its own table, and entries a dropped
+    connection never answered go with it.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()  # the main loop adds, the listener matches
+        self._windows: dict[str, str] = {}  # entry_hash -> window_start, in send order
+
+    def add(self, entry: dict):
+        with self._lock:
+            self._windows[entry["entry_hash"]] = entry["window_start"]
+
+    def match(self, entry_hash: str | None) -> str | None:
+        """The window_start of the entry an ack answers, which stops waiting."""
+        with self._lock:
+            if entry_hash is None:
+                if not self._windows:
+                    return None
+                entry_hash = next(iter(self._windows))
+            return self._windows.pop(entry_hash, None)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._windows)
+
+
+def _chain_ack_line(msg: dict, node_id: str, awaiting: _AwaitingAcks) -> str:
+    """One stderr line for a CHAIN_ENTRY_ACK, naming the window it answers."""
+    entry_hash = msg.get("entry_hash")
+    window = awaiting.match(entry_hash if isinstance(entry_hash, str) else None) or "?"
+    head = f"  ← CHAIN_ENTRY_ACK ({msg.get('node_id') or node_id} window={window}"
+    if msg.get("status") == "rejected":
+        return f"{head}, rejected: {msg.get('reason')})"
+    return (
+        f"{head}, verified={msg.get('verified')}, "
+        f"batch_verified={msg.get('batch_verified')}, reason={msg.get('reason')})"
+    )
+
+
+def _listener_loop(sock: socket.socket, config: NodeConfig, stop_event: threading.Event, awaiting: _AwaitingAcks):
+    """Listen for server messages on a background thread.
+
+    Answers CONFIG_REQUEST and prints CHAIN_ENTRY_ACK verdicts; anything else is
+    ignored. Runs until stop_event is set or the server closes the connection.
+
+    It waits with select rather than a socket timeout: the timeout would also
+    apply to the main loop's sends, and a CHAIN_ENTRY line near 1 MiB can take
+    longer than a second to send on a slow uplink.
+    """
+    buf = b""
     while not stop_event.is_set():
         try:
+            readable, _, _ = select.select([sock], [], [], 1.0)
+            if not readable:
+                continue
             chunk = sock.recv(4096)
-            if not chunk:
-                break
-            for line in chunk.split(b"\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    msg = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if msg.get("type") == "CONFIG_REQUEST":
-                    print("\n  ← CONFIG_REQUEST — resending config", file=sys.stderr)
-                    try:
-                        _send_msg(
-                            sock,
-                            {
-                                "type": "CONFIG",
-                                "node_id": config.node_id,
-                                "config_hash": _config_hash(config),
-                                "config": asdict(config),
-                            },
-                        )
-                    except (BrokenPipeError, ConnectionResetError, OSError):
-                        break
-        except TimeoutError:
-            continue
-        except (ConnectionResetError, OSError):
+        except (OSError, ValueError):  # ValueError: the socket was closed under us
             break
+        if not chunk:
+            break
+        # Keep a partial line until the rest arrives.
+        buf += chunk
+        *lines, buf = buf.split(b"\n")
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("type") == "CONFIG_REQUEST":
+                print("\n  ← CONFIG_REQUEST — resending config", file=sys.stderr)
+                try:
+                    _send_msg(
+                        sock,
+                        {
+                            "type": "CONFIG",
+                            "node_id": config.node_id,
+                            "config_hash": _config_hash(config),
+                            "config": asdict(config),
+                        },
+                    )
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+            elif msg.get("type") == "CHAIN_ENTRY_ACK":
+                print("\n" + _chain_ack_line(msg, config.node_id, awaiting), file=sys.stderr)
+
+
+# ── Chain of custody ──────────────────────────────────────────────────────────
+
+
+def _custody_dir(kind: str, node_id: str) -> str:
+    """coverage_data/<kind>/<node_id>, created if missing."""
+    path = os.path.join(_COVERAGE_DATA_DIR, kind, node_id)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _key_file(node_id: str) -> str:
+    return os.path.join(_custody_dir("keys", node_id), "synthetic_key.json")
+
+
+def _chain_builder(
+    node_id: str, crypto, node_config: dict, window_s: int | None = None, tsa: bool = False
+) -> "HashChainBuilder":
+    """The node's windowed hash chain, logged beside its key.
+
+    The chain directory is explicit because the library's default resolves
+    inside the installed retina_custody package. window_s None keeps the
+    library's window. tsa adds RFC 3161 and OpenTimestamps proofs to each
+    entry, which makes network calls when a window closes.
+    """
+    from retina_custody.hash_chain import DEFAULT_WINDOW_S, HashChainBuilder
+    from retina_custody.tsa_client import TimestampManager
+
+    return HashChainBuilder(
+        node_id,
+        crypto,
+        node_config,
+        chain_dir=_custody_dir("chains", node_id),
+        window_s=DEFAULT_WINDOW_S if window_s is None else window_s,
+        timestamper=TimestampManager() if tsa else None,
+    )
+
+
+def _last_logged_entry(log_path: str) -> "HashChainEntry | None":
+    """The newest entry in a chain log, or None.
+
+    Read the way HashChainBuilder resumes its prev_hash: the last line that
+    parses as an entry wins, and lines that do not are skipped. JSON that is
+    not an object is skipped too, since from_dict cannot read it.
+    """
+    from retina_custody.models import HashChainEntry
+
+    try:
+        with open(log_path) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            data = json.loads(line)
+            if isinstance(data, dict):
+                return HashChainEntry.from_dict(data)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _chain_resume_at(log_path: str, window_s: int) -> int | None:
+    """The earliest time a restarted node may open a window, or None if the log has no readable window.
+
+    The first window_s multiple at or after the last logged window_end, so a
+    new window cannot overlap it. That is the window_end itself unless the
+    window size changed between runs.
+    """
+    entry = _last_logged_entry(log_path)
+    if entry is None:
+        return None
+    try:
+        end = int(datetime.strptime(entry.window_end, ISO_UTC).replace(tzinfo=timezone.utc).timestamp())
+    except (ValueError, TypeError):
+        return None
+    return -(-end // window_s) * window_s
+
+
+class _NodeChain:
+    """A node's windowed chain, held back after a restart inside its last committed window.
+
+    The builder opens its first window on the window_s multiple holding the
+    current time, and the node commits its open window on exit, so that window
+    usually ends in the future. A restart before then would open the same range
+    again and sign a second batch for it. Until _chain_resume_at, frames still
+    go out as DETECTIONs but stay out of the chain, and no window opens.
+    """
+
+    def __init__(self, node_id: str, builder: "HashChainBuilder", log_path: str, clock=time.time):
+        self.node_id = node_id
+        self.builder = builder
+        self._clock = clock  # the builder's clock
+        self._hold_until = _chain_resume_at(log_path, builder.window_s)
+        self._hold_noted = False
+
+    def _holding(self) -> bool:
+        if self._hold_until is None:
+            return False
+        if self._clock() >= self._hold_until:
+            self._hold_until = None
+            return False
+        if not self._hold_noted:
+            self._hold_noted = True
+            until = datetime.fromtimestamp(self._hold_until, tz=timezone.utc).strftime(ISO_UTC)
+            print(
+                f"\n  {self.node_id}: holding the chain until {until}, so no window overlaps the last "
+                "committed one; frames until then go out but are not chained",
+                file=sys.stderr,
+            )
+        return True
+
+    def record(self, frame: dict) -> tuple[dict, list[dict]]:
+        """The frame's DETECTION message, and CHAIN_ENTRY messages for a window it closed."""
+        if self._holding():
+            return _detection_msg(self.node_id, frame), []
+        return _record_frame(self.builder, self.node_id, frame)
+
+    def close_if_due(self) -> list[dict]:
+        """The library's timer hook, which would also open a window, so it waits out the hold too."""
+        return [] if self._holding() else _chain_msgs(self.node_id, self.builder.close_if_due())
+
+    def close_window(self) -> list[dict]:
+        """Commit the open window at shutdown; nothing if none opened."""
+        return _chain_msgs(self.node_id, self.builder.close_window())
+
+
+def _node_chain(node_id: str, crypto, node_config: dict, window_s: int | None = None, tsa: bool = False) -> _NodeChain:
+    """The node's chain as the runners use it: resumed from its log, and held after a restart."""
+    builder = _chain_builder(node_id, crypto, node_config, window_s=window_s, tsa=tsa)
+    return _NodeChain(node_id, builder, os.path.join(_custody_dir("chains", node_id), CHAIN_LOG))
+
+
+def _chain_entry_msg(node_id: str, entry: "HashChainEntry", batch: bytes) -> dict:
+    """The CHAIN_ENTRY message for one closed window, with its frame batch.
+
+    The batch is optional on the wire. When the encoded line would pass the
+    server's line limit, it is left out (the server then checks the entry's
+    hash, signature and linkage, but not the frames) and a note is printed.
+    """
+    msg = {"type": "CHAIN_ENTRY", "node_id": node_id, "entry": entry.to_dict(), "batch": batch.decode("ascii")}
+    size = len(_encode_msg(msg))
+    if size > TCP_LINE_MAX:
+        del msg["batch"]
+        print(
+            f"\n  ! CHAIN_ENTRY window={entry.window_start}: {size} bytes with its batch, over the "
+            f"{TCP_LINE_MAX}-byte line limit; sending it without the batch",
+            file=sys.stderr,
+        )
+    return msg
+
+
+def _chain_msgs(node_id: str, closed: "tuple[HashChainEntry, bytes] | None") -> list[dict]:
+    """CHAIN_ENTRY messages for a builder result: none, or one for the window it closed."""
+    return [] if closed is None else [_chain_entry_msg(node_id, *closed)]
+
+
+def _detection_msg(node_id: str, frame: dict) -> dict:
+    """The frame's DETECTION message, unsigned since the chain commits to whole windows."""
+    return {"type": "DETECTION", "node_id": node_id, "data": frame}
+
+
+def _record_frame(chain_builder: "HashChainBuilder", node_id: str, frame: dict) -> tuple[dict, list[dict]]:
+    """Add a frame to the node's chain window.
+
+    Returns the frame's DETECTION message and the CHAIN_ENTRY messages for a
+    stale window the frame closed on its way in.
+    """
+    closed = chain_builder.add_detection(frame)
+    return _detection_msg(node_id, frame), _chain_msgs(node_id, closed)
+
+
+def _send_chain_msgs(sock: socket.socket, pending: list[dict], awaiting: _AwaitingAcks):
+    """Send queued CHAIN_ENTRY messages, oldest first.
+
+    A message leaves the queue only after its whole line is written. A send
+    that fails never writes the newline, and the server drops a line it never
+    finished, so a message left in the queue is safe to send again on the next
+    connection. awaiting lets the listener name the window an ack is for.
+    """
+    while pending:
+        msg = pending[0]
+        entry = msg["entry"]
+        # Recorded before sending: the ack can arrive before sendall returns.
+        awaiting.add(entry)
+        _send_msg(sock, msg)
+        pending.pop(0)
+        batch = f"batch={len(msg['batch'])} B" if "batch" in msg else "no batch"
+        print(
+            f"\n  → CHAIN_ENTRY (window={entry['window_start']}, n={entry['n_detections']}, {batch})",
+            file=sys.stderr,
+        )
+
+
+def _send_final(sock: socket.socket, pending: list[dict], awaiting: _AwaitingAcks):
+    """Best-effort delivery of the last chain entries at shutdown, then a half-close.
+
+    The half-close lets the server read every line and answer before it sees
+    EOF, so the listener can print the final ack. Closing outright while acks
+    sit unread resets the connection, and the server can lose the last line.
+    """
+    try:
+        # A Ctrl-C can cut a send short. A bare newline ends that fragment, which
+        # the server drops as bad JSON, so it cannot swallow the next message.
+        with _send_lock(sock):
+            sock.sendall(b"\n")
+        _send_chain_msgs(sock, pending, awaiting)
+        sock.shutdown(socket.SHUT_WR)
+    except OSError as exc:
+        if pending:
+            print(f"\n  ! {len(pending)} chain entries not sent at shutdown: {exc}", file=sys.stderr)
 
 
 # ── Streaming modes ───────────────────────────────────────────────────────────
 
 
 def _stream_tcp(
-    generator: SyntheticNodeGenerator, host: str, port: int, interval_ms: int = 500, cloudflare_host: str | None = None
+    generator: SyntheticNodeGenerator,
+    host: str,
+    port: int,
+    interval_ms: int = 500,
+    cloudflare_host: str | None = None,
+    tsa: bool = False,
+    chain_window_s: int | None = None,
 ):
     """Stream detection frames to the tracker server over TCP with full protocol.
 
-    Includes chain of custody: signing, hash chain, TSA timestamping.
+    Includes chain of custody: frames go out unsigned and into the windowed hash
+    chain, and each closed window is sent as a CHAIN_ENTRY with its batch.
+    chain_window_s None keeps the library's window; tsa timestamps each entry.
     """
     from retina_custody.crypto_backend import SoftwareCryptoBackend
-    from retina_custody.hash_chain import HashChainBuilder
     from retina_custody.iq_buffer import IQCircularBuffer
-    from retina_custody.packet_signer import PacketSigner
-    from retina_custody.tsa_client import TimestampManager
 
     config = generator.config
 
     # Initialize chain of custody
-    key_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "keys", config.node_id)
-    os.makedirs(key_dir, exist_ok=True)
-    crypto = SoftwareCryptoBackend(key_file=os.path.join(key_dir, "synthetic_key.json"))
-    signer = PacketSigner(config.node_id, crypto)
-    chain_builder = HashChainBuilder(config.node_id, crypto, asdict(config))
-    tsa_manager = TimestampManager(enable_tsa=True, enable_ots=True)
+    crypto = SoftwareCryptoBackend(key_file=_key_file(config.node_id))
+    chain = _node_chain(config.node_id, crypto, asdict(config), window_s=chain_window_s, tsa=tsa)
     iq_buffer = IQCircularBuffer(is_synthetic=True)
     iq_buffer.start()
 
     print(
-        f"  Chain of custody: key_fp={crypto.get_public_key_fingerprint()[:12]}... serial={crypto.get_serial_number()}",
+        f"  Chain of custody: key_fp={crypto.get_public_key_fingerprint()[:12]}... serial={crypto.get_serial_number()}"
+        f" window={chain.builder.window_s}s tsa={'on' if tsa else 'off'} prev={chain.builder.prev_hash[:12]}"
+        f" dir={_custody_dir('chains', config.node_id)}",
         file=sys.stderr,
     )
+
+    # Closed windows not yet written to a connection, oldest first. They outlive
+    # a dropped connection and go out first on the next one.
+    pending: list[dict] = []
 
     while True:
         sock = _connect_tcp(host, port, cloudflare_host=cloudflare_host)
@@ -632,8 +971,11 @@ def _stream_tcp(
 
         # Start heartbeat and listener threads
         stop_event = threading.Event()
+        awaiting = _AwaitingAcks()  # this connection's chain entries, for ack lines
         hb_thread = threading.Thread(target=_heartbeat_loop, args=(sock, config, stop_event), daemon=True)
-        listener_thread = threading.Thread(target=_listener_loop, args=(sock, config, stop_event), daemon=True)
+        listener_thread = threading.Thread(
+            target=_listener_loop, args=(sock, config, stop_event, awaiting), daemon=True
+        )
         hb_thread.start()
         listener_thread.start()
 
@@ -643,59 +985,32 @@ def _stream_tcp(
             while True:
                 timestamp_ms = int(time.time() * 1000)
                 frame = generator.generate_frame(timestamp_ms)
+                detection_msg, chain_msgs = chain.record(frame)
+                pending.extend(chain_msgs)
 
-                # Sign the detection frame
-                signed = signer.sign_frame(frame)
-                chain_builder.add_detection(signed.payload_hash)
-
-                # Wrap in DETECTION message with signed envelope
-                detection_msg = {
-                    "type": "DETECTION",
-                    "node_id": config.node_id,
-                    "data": signed.to_dict(),
-                }
+                # The library's timer hook: closes a window that came due
+                # without a frame to close it.
+                now = time.time()
+                if now - last_chain_check > CHAIN_CHECK_INTERVAL_S:
+                    last_chain_check = now
+                    pending.extend(chain.close_if_due())
 
                 try:
+                    _send_chain_msgs(sock, pending, awaiting)
                     _send_msg(sock, detection_msg)
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     print("\nConnection lost, reconnecting...", file=sys.stderr)
                     break
-
-                # Check for hour boundary — close chain and submit
-                now = time.time()
-                if now - last_chain_check > 60:  # Check every ~60s
-                    last_chain_check = now
-                    entry = chain_builder.close_hour()
-                    if entry:
-                        # Get TSA timestamp and OTS proof
-                        tsa_token, ots_proof = tsa_manager.timestamp_entry(entry.entry_hash)
-                        if tsa_token:
-                            entry.tsa_token = tsa_token
-                        if ots_proof:
-                            entry.ots_proof = ots_proof
-                        # Submit chain entry to server
-                        try:
-                            _send_msg(
-                                sock,
-                                {
-                                    "type": "CHAIN_ENTRY",
-                                    "node_id": config.node_id,
-                                    "entry": entry.to_dict(),
-                                },
-                            )
-                            print(f"\n  → CHAIN_ENTRY (hour={entry.hour_utc}, n={entry.n_detections})", file=sys.stderr)
-                        except (BrokenPipeError, ConnectionResetError, OSError):
-                            pass
 
                 # Print summary to stderr
                 n_det = len(frame["delay"])
                 n_adsb = sum(1 for a in frame.get("adsb", []) if a is not None) if "adsb" in frame else 0
                 print(
                     f"\r[{time.strftime('%H:%M:%S')}] "
-                    f"Sent signed DETECTION: {n_det} detections"
+                    f"Sent DETECTION: {n_det} detections"
                     f"{f', {n_adsb} with ADS-B' if n_adsb else ''}"
                     f" | targets: {len(generator.targets)}"
-                    f" | chain: {chain_builder.pending_detections} pending",
+                    f" | chain: {chain.builder.pending_detections} pending",
                     end="",
                     file=sys.stderr,
                 )
@@ -704,13 +1019,11 @@ def _stream_tcp(
 
         except KeyboardInterrupt:
             print("\nStopping synthetic node.", file=sys.stderr)
-            # Close any pending chain entry
-            entry = chain_builder.close_hour()
-            if entry:
-                print(f"  Final chain entry: {entry.n_detections} detections", file=sys.stderr)
+            # Commit the open window and send it, with anything still queued.
+            pending.extend(chain.close_window())
+            _send_final(sock, pending, awaiting)
+            listener_thread.join(timeout=FINAL_ACK_WAIT_S)
             iq_buffer.stop()
-            stop_event.set()
-            sock.close()
             return
         finally:
             stop_event.set()
@@ -837,19 +1150,19 @@ def _stream_multi_node_tcp(
     mode: str = "detection",
     interval_ms: int = 500,
     cloudflare_host: str | None = None,
+    tsa: bool = False,
+    chain_window_s: int | None = None,
 ):
     """Run multiple synthetic nodes from a shared simulation world.
 
     Each node gets its own TCP connection, protocol handshake, and
-    chain of custody key pair (signing, hash chain).
+    chain of custody key pair and windowed hash chain.
     All nodes observe the SAME aircraft objects.
 
     Args:
         nodes_config_path: Path to JSON file with list of node configs.
     """
     from retina_custody.crypto_backend import SoftwareCryptoBackend
-    from retina_custody.hash_chain import HashChainBuilder
-    from retina_custody.packet_signer import PacketSigner
 
     from retina_simulation.world import NodeConfig as WorldNodeConfig
     from retina_simulation.world import SimulationWorld
@@ -892,13 +1205,15 @@ def _stream_multi_node_tcp(
     print(f"Multi-node simulation: {len(node_configs)} nodes", file=sys.stderr)
     for nc in node_configs:
         print(f"  {nc.node_id}: RX=({nc.rx_lat:.4f}, {nc.rx_lon:.4f}) beam={nc.beam_azimuth_deg:.0f}°", file=sys.stderr)
+    print(
+        f"  Chain logs: {os.path.join(_COVERAGE_DATA_DIR, 'chains')}/<node_id> (tsa={'on' if tsa else 'off'})",
+        file=sys.stderr,
+    )
 
     # Connect each node with chain of custody
     node_sockets: dict[str, socket.socket] = {}
     node_local_configs: dict[str, NodeConfig] = {}
-    node_crypto: dict[str, SoftwareCryptoBackend] = {}
-    node_signers: dict[str, PacketSigner] = {}
-    node_chains: dict[str, HashChainBuilder] = {}
+    node_chains: dict[str, _NodeChain] = {}
 
     for wc in node_configs:
         local_cfg = NodeConfig(
@@ -915,12 +1230,8 @@ def _stream_multi_node_tcp(
         node_local_configs[wc.node_id] = local_cfg
 
         # Initialize chain of custody for this node
-        key_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "keys", wc.node_id)
-        os.makedirs(key_dir, exist_ok=True)
-        crypto = SoftwareCryptoBackend(key_file=os.path.join(key_dir, "synthetic_key.json"))
-        node_crypto[wc.node_id] = crypto
-        node_signers[wc.node_id] = PacketSigner(wc.node_id, crypto)
-        node_chains[wc.node_id] = HashChainBuilder(wc.node_id, crypto, asdict(local_cfg))
+        crypto = SoftwareCryptoBackend(key_file=_key_file(wc.node_id))
+        node_chains[wc.node_id] = _node_chain(wc.node_id, crypto, asdict(local_cfg), window_s=chain_window_s, tsa=tsa)
 
         sock = _connect_tcp(host, port, cloudflare_host=cloudflare_host)
         if not _perform_handshake(sock, local_cfg, crypto_backend=crypto):
@@ -933,8 +1244,13 @@ def _stream_multi_node_tcp(
         print("No nodes connected, exiting.", file=sys.stderr)
         return
 
-    # Start heartbeat threads for all nodes
+    # Start heartbeat and listener threads for all nodes. The listeners also
+    # keep each socket read: unread acks would fill the buffers until the
+    # server, which drains every write, stopped reading from the node.
     stop_event = threading.Event()
+    # Each connection's chain entries, for ack lines
+    node_awaiting = {nid: _AwaitingAcks() for nid in node_sockets}
+    listeners: list[threading.Thread] = []
     for nid, sock in node_sockets.items():
         t = threading.Thread(
             target=_heartbeat_loop,
@@ -942,12 +1258,30 @@ def _stream_multi_node_tcp(
             daemon=True,
         )
         t.start()
+        listener = threading.Thread(
+            target=_listener_loop,
+            args=(sock, node_local_configs[nid], stop_event, node_awaiting[nid]),
+            daemon=True,
+        )
+        listener.start()
+        listeners.append(listener)
 
-    # Track last chain-close time per node
-    last_chain_check: dict[str, float] = {nid: time.time() for nid in node_sockets}
-    current_hour: dict[str, str] = {}
-    for nid in node_sockets:
-        current_hour[nid] = time.strftime("%Y-%m-%dT%H", time.gmtime())
+    # Closed windows not yet written to the node's connection, oldest first
+    node_pending: dict[str, list[dict]] = {nid: [] for nid in node_chains}
+
+    def send_or_drop(nid: str, *msgs: dict):
+        """Send the node's queued chain entries, then msgs; drop the node if its connection is gone."""
+        sock = node_sockets[nid]
+        try:
+            _send_chain_msgs(sock, node_pending[nid], node_awaiting[nid])
+            for msg in msgs:
+                _send_msg(sock, msg)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            print(f"\nLost connection for {nid}", file=sys.stderr)
+            node_sockets.pop(nid, None)
+            sock.close()
+
+    last_chain_check = time.time()
 
     # Main simulation loop
     try:
@@ -964,55 +1298,18 @@ def _stream_multi_node_tcp(
                 n_det = len(frame["delay"])
                 total_det += n_det
 
-                # Sign the detection frame
-                signer = node_signers.get(nid)
-                if signer:
-                    signed = signer.sign_frame(frame)
-                    node_chains[nid].add_detection(signed.payload_hash)
-                    detection_msg = {
-                        "type": "DETECTION",
-                        "node_id": nid,
-                        "data": frame,
-                        "signature": signed.signature,
-                        "payload_hash": signed.payload_hash,
-                        "signing_mode": signed.signing_mode,
-                        "public_key_fingerprint": signed.public_key_fingerprint,
-                    }
-                else:
-                    detection_msg = {
-                        "type": "DETECTION",
-                        "node_id": nid,
-                        "data": frame,
-                    }
+                detection_msg, chain_msgs = node_chains[nid].record(frame)
+                node_pending[nid].extend(chain_msgs)
+                send_or_drop(nid, detection_msg)
 
-                try:
-                    _send_msg(node_sockets[nid], detection_msg)
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    print(f"\nLost connection for {nid}", file=sys.stderr)
-                    node_sockets.pop(nid, None)
-
-            # Check hour boundary for chain closure (every 60s)
+            # The library's timer hook: closes a window that came due without
+            # a frame to close it.
             now = time.time()
-            hour_now = time.strftime("%Y-%m-%dT%H", time.gmtime())
-            for nid in list(node_sockets.keys()):
-                if now - last_chain_check.get(nid, 0) < 60:
-                    continue
-                last_chain_check[nid] = now
-                if hour_now != current_hour.get(nid):
-                    chain_builder = node_chains.get(nid)
-                    if chain_builder and chain_builder._detection_hashes:
-                        entry = chain_builder.close_hour()
-                        if entry:
-                            chain_msg = {
-                                "type": "CHAIN_ENTRY",
-                                "node_id": nid,
-                                "entry": asdict(entry),
-                            }
-                            try:
-                                _send_msg(node_sockets[nid], chain_msg)
-                            except (BrokenPipeError, ConnectionResetError, OSError):
-                                pass
-                    current_hour[nid] = hour_now
+            if now - last_chain_check > CHAIN_CHECK_INTERVAL_S:
+                last_chain_check = now
+                for nid in list(node_sockets):
+                    node_pending[nid].extend(node_chains[nid].close_if_due())
+                    send_or_drop(nid)
 
             n_aircraft = len(world.aircraft)
             n_adsb = sum(1 for ac in world.aircraft if ac.has_adsb)
@@ -1034,19 +1331,31 @@ def _stream_multi_node_tcp(
     except KeyboardInterrupt:
         print("\nStopping multi-node simulation.", file=sys.stderr)
     finally:
+        # Commit each node's open window and send it, with anything still queued.
+        for nid, chain in node_chains.items():
+            node_pending[nid].extend(chain.close_window())
+            if nid in node_sockets:
+                _send_final(node_sockets[nid], node_pending[nid], node_awaiting[nid])
+            elif node_pending[nid]:
+                print(f"\n  ! {nid}: {len(node_pending[nid])} chain entries not sent (disconnected)", file=sys.stderr)
+        deadline = time.monotonic() + FINAL_ACK_WAIT_S
+        for listener in listeners:
+            listener.join(timeout=max(0.0, deadline - time.monotonic()))
         stop_event.set()
-        # Close any pending chain entries
-        for chain_builder in node_chains.values():
-            if chain_builder._detection_hashes:
-                try:
-                    chain_builder.close_hour()
-                except Exception:
-                    pass
         for sock in node_sockets.values():
             sock.close()
 
 
+def _positive_int(value: str) -> int:
+    n = int(value)
+    if n <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value}")
+    return n
+
+
 def main():
+    from retina_custody.hash_chain import DEFAULT_WINDOW_S
+
     parser = argparse.ArgumentParser(description="Synthetic node for Retina passive radar network")
     parser.add_argument(
         "--host",
@@ -1113,6 +1422,17 @@ def main():
         default="synth-node-01",
         help="Node identifier — 'synth-' prefix marks synthetic nodes (default: synth-node-01)",
     )
+    parser.add_argument(
+        "--chain-window-s",
+        type=_positive_int,
+        default=DEFAULT_WINDOW_S,
+        help="Hash chain window in seconds, TCP modes (default: %(default)s, the retina-custody default)",
+    )
+    parser.add_argument(
+        "--tsa",
+        action="store_true",
+        help="Timestamp each chain entry with RFC 3161 TSA and OpenTimestamps, TCP modes (network calls; off by default)",
+    )
     # Node geometry overrides
     parser.add_argument("--rx-lat", type=float)
     parser.add_argument("--rx-lon", type=float)
@@ -1171,6 +1491,8 @@ def main():
             mode=args.mode,
             interval_ms=args.interval,
             cloudflare_host=cf_host,
+            tsa=args.tsa,
+            chain_window_s=args.chain_window_s,
         )
         return
 
@@ -1189,7 +1511,15 @@ def main():
                 f"  Streaming to: {args.host}:{args.port} (TCP)",
                 file=sys.stderr,
             )
-            _stream_tcp(generator, args.host, args.port, args.interval, cloudflare_host=cf_host)
+            _stream_tcp(
+                generator,
+                args.host,
+                args.port,
+                args.interval,
+                cloudflare_host=cf_host,
+                tsa=args.tsa,
+                chain_window_s=args.chain_window_s,
+            )
 
 
 if __name__ == "__main__":

@@ -5,3 +5,4 @@ dist/
 build/
 .venv/
 *.egg
+coverage_data/
