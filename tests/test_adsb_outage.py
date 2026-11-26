@@ -143,7 +143,7 @@ class TestFrameTagging:
         ac = w._spawn_aircraft(mode="adsb")
         # Park the aircraft on top of the node so the cone/miss roll cannot
         # drop it; retry a few frames to ride out the SNR-dependent miss.
-        ac.lat, ac.lon, ac.alt_km = 33.94, -84.65, 9.0
+        ac.lat, ac.lon, ac.alt_km = 33.90, -84.60, 9.0
         ac.adsb_outage_start_s = 100.0
         ac.adsb_outage_end_s = 200.0
         w.aircraft = [ac]
@@ -166,7 +166,7 @@ class TestFrameTagging:
         w = _world(0.0)
         w.add_node(NodeConfig(node_id="n1", max_range_km=400.0, beam_width_deg=360.0))
         ac = w._spawn_aircraft(mode="adsb")
-        ac.lat, ac.lon, ac.alt_km = 33.94, -84.65, 9.0
+        ac.lat, ac.lon, ac.alt_km = 33.90, -84.60, 9.0
         ac.adsb_outage_start_s, ac.adsb_outage_end_s = 0.0, 200.0
         ac.sim_now_s = 100.0
         w.aircraft = [ac]

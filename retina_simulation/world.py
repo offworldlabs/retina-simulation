@@ -237,8 +237,8 @@ class NodeConfig:
     """Configuration for a synthetic radar node."""
 
     node_id: str = "synth-node-01"
-    rx_lat: float = 33.939182
-    rx_lon: float = -84.651910
+    rx_lat: float = 33.900000
+    rx_lon: float = -84.600000
     rx_alt_ft: float = 950.0
     tx_lat: float = 33.75667
     tx_lon: float = -84.331844

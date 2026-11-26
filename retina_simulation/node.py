@@ -57,8 +57,8 @@ class NodeConfig:
     """Passive radar node configuration."""
 
     node_id: str = "synth-node-01"
-    rx_lat: float = 33.939182
-    rx_lon: float = -84.651910
+    rx_lat: float = 33.900000
+    rx_lon: float = -84.600000
     rx_alt_ft: float = 950.0
     tx_lat: float = 33.75667
     tx_lon: float = -84.331844
@@ -868,8 +868,8 @@ def _stream_multi_node_tcp(
     for nd in nodes_data:
         wc = WorldNodeConfig(
             node_id=nd.get("node_id", f"synth-node-{len(node_configs) + 1:02d}"),
-            rx_lat=nd.get("rx_lat", 33.939182),
-            rx_lon=nd.get("rx_lon", -84.651910),
+            rx_lat=nd.get("rx_lat", 33.900000),
+            rx_lon=nd.get("rx_lon", -84.600000),
             rx_alt_ft=nd.get("rx_alt_ft", 950.0),
             tx_lat=nd.get("tx_lat", 33.75667),
             tx_lon=nd.get("tx_lon", -84.331844),
