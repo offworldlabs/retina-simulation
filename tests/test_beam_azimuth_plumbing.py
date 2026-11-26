@@ -14,7 +14,7 @@ from retina_simulation.world import (
     _bearing_deg,
 )
 
-_RX_LAT, _RX_LON = 33.939182, -84.651910
+_RX_LAT, _RX_LON = 33.900000, -84.600000
 _TX_LAT, _TX_LON = 33.75667, -84.331844
 
 
